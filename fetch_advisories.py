@@ -40,7 +40,7 @@ import netrc
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Iterator, Optional
 
 import requests
@@ -89,6 +89,17 @@ DEFAULT_STATES = ('draft', 'triage')
 def get_embargo(created_at: str) -> str:
     embargo = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
     return (embargo + timedelta(days=90)).strftime('%Y-%m-%d')
+
+
+def is_past_embargo(created_at: Optional[str]) -> bool:
+    if not created_at:
+        return False
+    return date.fromisoformat(get_embargo(created_at)) < date.today()
+
+
+def filter_past_embargo(
+        advisories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [a for a in advisories if is_past_embargo(a.get('created_at'))]
 
 
 def fetch_repo_advisories(session: requests.Session, repo: str,
@@ -259,6 +270,9 @@ def main() -> int:
     parser.add_argument('--ghsa',
                         help='fetch a single advisory by GHSA id (uses the '
                              'repo endpoint unless --global is given)')
+    parser.add_argument('--past-embargo', action='store_true',
+                        help='only show advisories whose 90-day embargo '
+                             'period has already elapsed')
     parser.add_argument('--json', action='store_true',
                         help='emit raw JSON instead of a summary table')
     args = parser.parse_args()
@@ -294,6 +308,9 @@ def main() -> int:
         advisories = fetch_repo_advisories(session, args.repo, states)
         if args.severity:
             advisories = filter_severity(advisories, args.severity)
+
+    if args.past_embargo:
+        advisories = filter_past_embargo(advisories)
 
     if args.json:
         json.dump(advisories, sys.stdout, indent=2)
