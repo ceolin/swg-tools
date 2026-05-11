@@ -39,6 +39,7 @@ import json
 import netrc
 import os
 import sys
+from datetime import datetime, timedelta
 from typing import Any, Iterator, Optional
 
 import requests
@@ -83,6 +84,10 @@ def paginate(session: requests.Session, url: str,
 
 
 DEFAULT_STATES = ('draft', 'triage')
+
+def get_embargo(created_at: str) -> str:
+    embargo = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+    return (embargo + timedelta(days=90)).strftime('%Y-%m-%d')
 
 
 def fetch_repo_advisories(session: requests.Session, repo: str,
@@ -145,6 +150,7 @@ def print_advisory(a: dict[str, Any]) -> None:
     severity = (a.get('severity') or '').lower()
     field('Severity', severity or None)
     field('State', a.get('state'))
+    field('Created', a.get('created_at'))
     field('Published', a.get('published_at'))
     field('Updated', a.get('updated_at'))
     field('URL', a.get('html_url'))
@@ -195,18 +201,19 @@ def print_table(advisories: list[dict[str, Any]]) -> None:
     if not advisories:
         print('No advisories found.')
         return
-    fmt = '{:<20} {:<16} {:<10} {:<12} {}'
-    print(fmt.format('GHSA', 'CVE', 'Severity', 'State', 'Summary'))
-    print('-' * 100)
+    fmt = '{:<20} {:<16} {:<10} {:<12} {:<12} {}'
+    print(fmt.format('GHSA', 'CVE', 'Severity', 'State', 'Embargo', 'Summary'))
+    print('-' * 110)
     for a in advisories:
         ghsa = a.get('ghsa_id', '') or ''
         cve = a.get('cve_id') or '-'
         severity = (a.get('severity') or '-').lower()
         state = a.get('state', '-') or '-'
+        embargo = get_embargo(a.get("created_at"))
         summary = (a.get('summary') or '').replace('\n', ' ')
-        if len(summary) > 60:
-            summary = summary[:57] + '...'
-        print(fmt.format(ghsa, cve, severity, state, summary))
+        if len(summary) > 50:
+            summary = summary[:47] + '...'
+        print(fmt.format(ghsa, cve, severity, state, embargo, summary))
 
 
 def main() -> int:
