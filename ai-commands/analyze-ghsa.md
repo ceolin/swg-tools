@@ -37,10 +37,11 @@ Output, in this order:
 
 1. **Header** — GHSA id, CVE (if any), severity + CVSS, state, published/updated dates, advisory URL.
 2. **Summary** — one or two sentences in your own words; do not just paste the advisory text.
-3. **Affected surface** — bulleted list of packages / modules / Kconfigs / drivers impacted, with version ranges and the specific files you verified.
-4. **Exploitability** — preconditions required to trigger the issue (attacker position, enabled config options, board/SoC constraints). Be concrete; if the advisory is vague, say so.
-5. **Fix status in this tree** — whether the fix appears applied, partially applied, or missing, with file:line citations backing each claim.
-6. **Recommended actions** — what a Zephyr maintainer or downstream user should do next (backport, enable a Kconfig, disable a feature, wait for upstream, etc.). Keep it short and actionable.
-7. **References** — URLs from the advisory plus anything else you consulted.
+3. **CWE** - suggest the most appropriated CWE for the problem
+4. **Affected surface** — bulleted list of packages / modules / Kconfigs / drivers impacted, with version ranges and the specific files you verified.
+5. **Exploitability** — preconditions required to trigger the issue (attacker position, enabled config options, board/SoC constraints). Be concrete; if the advisory is vague, say so.
+6. **Fix status in this tree** — whether the fix appears applied, partially applied, or missing, with file:line citations backing each claim.
+7. **Recommended actions** — what a Zephyr maintainer or downstream user should do next (backport, enable a Kconfig, disable a feature, wait for upstream, etc.). Keep it short and actionable.
+8. **References** — URLs from the advisory plus anything else you consulted.
 
 Be precise. Prefer "I could not confirm X" over speculation. Do not recommend code changes in this command — the output is a briefing, not a patch.
