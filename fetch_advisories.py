@@ -38,6 +38,7 @@ import argparse
 import json
 import netrc
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from typing import Any, Iterator, Optional
@@ -139,6 +140,18 @@ def filter_severity(advisories: list[dict[str, Any]],
             if (a.get('severity') or '').lower() == severity.lower()]
 
 
+PATCHES_RE = re.compile(r'(?ims)^#{1,6}\s*Patches\s*$\s*(.*?)(?=^#{1,6}\s|\Z)')
+
+
+def parse_patches(description: Optional[str]) -> Optional[str]:
+    if not description:
+        return None
+    m = PATCHES_RE.search(description)
+    if not m:
+        return None
+    return m.group(1).strip() or None
+
+
 def print_advisory(a: dict[str, Any]) -> None:
     def field(name: str, value: Any) -> None:
         if value in (None, '', [], {}):
@@ -173,6 +186,10 @@ def print_advisory(a: dict[str, Any]) -> None:
         print('Description:')
         print(a['description'])
 
+    patches = parse_patches(a.get('description'))
+    if patches:
+        print(f'\nPatches:\n{patches}')
+
     vulns = a.get('vulnerabilities') or []
     if vulns:
         print()
@@ -201,19 +218,22 @@ def print_table(advisories: list[dict[str, Any]]) -> None:
     if not advisories:
         print('No advisories found.')
         return
-    fmt = '{:<20} {:<16} {:<10} {:<12} {:<12} {}'
-    print(fmt.format('GHSA', 'CVE', 'Severity', 'State', 'Embargo', 'Summary'))
-    print('-' * 110)
+    fmt = '{:<20} {:<16} {:<10} {:<12} {:<8} {:<12} {}'
+    print(fmt.format('GHSA', 'CVE', 'Severity', 'State', 'Patches',
+                     'Embargo', 'Summary'))
+    print('-' * 120)
     for a in advisories:
         ghsa = a.get('ghsa_id', '') or ''
         cve = a.get('cve_id') or '-'
         severity = (a.get('severity') or '-').lower()
         state = a.get('state', '-') or '-'
+        patches = 'yes' if parse_patches(a.get('description')) else 'no'
         embargo = get_embargo(a.get("created_at"))
         summary = (a.get('summary') or '').replace('\n', ' ')
         if len(summary) > 50:
             summary = summary[:47] + '...'
-        print(fmt.format(ghsa, cve, severity, state, embargo, summary))
+        print(fmt.format(ghsa, cve, severity, state, patches,
+                         embargo, summary))
 
 
 def main() -> int:
