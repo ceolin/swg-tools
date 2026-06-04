@@ -43,5 +43,6 @@ Output, in this order:
 6. **Fix status in this tree** — whether the fix appears applied, partially applied, or missing, with file:line citations backing each claim.
 7. **Recommended actions** — what a Zephyr maintainer or downstream user should do next (backport, enable a Kconfig, disable a feature, wait for upstream, etc.). Keep it short and actionable.
 8. **References** — URLs from the advisory plus anything else you consulted.
+9. **Maintainers** -- Use `python3 scripts/get_maintainer.py path` for the affected code to find the maintainers.
 
 Be precise. Prefer "I could not confirm X" over speculation. Do not recommend code changes in this command — the output is a briefing, not a patch.
