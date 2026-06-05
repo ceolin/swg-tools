@@ -18,8 +18,7 @@ uv sync
 
 ## Authentication
 
-A GitHub token is required for repository advisories and strongly
-recommended for global queries (to avoid rate limiting). The token is
+A GitHub token is required for repository advisories. The token is
 read from:
 
 1. The `GITHUB_TOKEN` environment variable, or
@@ -39,12 +38,8 @@ uv run scripts/fetch_advisories.py --state published --json
 # Multiple explicit states
 uv run scripts/fetch_advisories.py --state triage --state published
 
-# Global advisories filtered by ecosystem and severity
-uv run scripts/fetch_advisories.py --global --ecosystem pip --severity high
-
-# A single advisory by GHSA id (repo endpoint by default)
+# A single advisory by GHSA id
 uv run scripts/fetch_advisories.py --ghsa GHSA-xxxx-xxxx-xxxx
-uv run scripts/fetch_advisories.py --global --ghsa GHSA-xxxx-xxxx-xxxx
 ```
 
 See `uv run scripts/fetch_advisories.py --help` for the full option list.

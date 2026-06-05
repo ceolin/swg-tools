@@ -6,14 +6,11 @@
 '''
 Fetch security advisories from GitHub using the REST API.
 
-By default, this lists repository security advisories for
-zephyrproject-rtos/zephyr. Use --global to query GitHub's global
-advisory database instead.
+This lists repository security advisories for zephyrproject-rtos/zephyr.
 
 Authentication:
-    A GitHub token is required for repository advisories and strongly
-    recommended otherwise (to avoid rate limiting). The token is read
-    from the GITHUB_TOKEN environment variable, or ~/.netrc for
+    A GitHub token is required for repository advisories. The token is
+    read from the GITHUB_TOKEN environment variable, or ~/.netrc for
     github.com.
 
 Examples:
@@ -26,12 +23,8 @@ Examples:
     # Fetch multiple explicit states
     ./fetch_advisories.py --state triage --state published
 
-    # Global advisories affecting a given ecosystem / package
-    ./fetch_advisories.py --global --ecosystem pip --severity high
-
-    # Fetch a single advisory by GHSA id (repo by default; --global for DB)
+    # Fetch a single advisory by GHSA id
     ./fetch_advisories.py --ghsa GHSA-xxxx-xxxx-xxxx
-    ./fetch_advisories.py --global --ghsa GHSA-xxxx-xxxx-xxxx
 '''
 
 import argparse
@@ -113,27 +106,9 @@ def fetch_repo_advisories(session: requests.Session, repo: str,
     return result
 
 
-def fetch_global_advisories(session: requests.Session,
-                            ecosystem: Optional[str],
-                            severity: Optional[str],
-                            cve: Optional[str]) -> list[dict[str, Any]]:
-    url = f'{GITHUB_API}/advisories'
-    params: dict[str, Any] = {}
-    if ecosystem:
-        params['ecosystem'] = ecosystem
-    if severity:
-        params['severity'] = severity
-    if cve:
-        params['cve_id'] = cve
-    return list(paginate(session, url, params))
-
-
 def fetch_advisory(session: requests.Session, ghsa: str,
-                   repo: Optional[str]) -> dict[str, Any]:
-    if repo:
-        url = f'{GITHUB_API}/repos/{repo}/security-advisories/{ghsa}'
-    else:
-        url = f'{GITHUB_API}/advisories/{ghsa}'
+                   repo: str) -> dict[str, Any]:
+    url = f'{GITHUB_API}/repos/{repo}/security-advisories/{ghsa}'
     resp = session.get(url)
     if resp.status_code == 401:
         sys.exit('error: authentication failed; check your GitHub token')
@@ -253,9 +228,6 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--repo', default=DEFAULT_REPO,
                         help=f'owner/name repo slug (default: {DEFAULT_REPO})')
-    parser.add_argument('--global', dest='global_db', action='store_true',
-                        help='query the global GitHub Advisory Database '
-                             'instead of a repository')
     parser.add_argument('--state', action='append',
                         choices=['triage', 'draft', 'published', 'closed'],
                         help='repo advisories: state to fetch; may be given '
@@ -263,13 +235,8 @@ def main() -> int:
     parser.add_argument('--severity',
                         choices=['low', 'medium', 'high', 'critical'],
                         help='filter by severity')
-    parser.add_argument('--ecosystem',
-                        help='global advisories: filter by ecosystem '
-                             '(e.g. pip, npm, maven)')
-    parser.add_argument('--cve', help='global advisories: filter by CVE id')
     parser.add_argument('--ghsa',
-                        help='fetch a single advisory by GHSA id (uses the '
-                             'repo endpoint unless --global is given)')
+                        help='fetch a single advisory by GHSA id')
     parser.add_argument('--past-embargo', action='store_true',
                         help='only show advisories whose 90-day embargo '
                              'period has already elapsed')
@@ -286,13 +253,12 @@ def main() -> int:
     token = get_token()
     if token:
         session.headers['Authorization'] = f'Bearer {token}'
-    elif not args.global_db:
+    else:
         sys.exit('error: a GitHub token is required for repository '
                  'advisories (set GITHUB_TOKEN or configure ~/.netrc)')
 
     if args.ghsa:
-        repo = None if args.global_db else args.repo
-        advisory = fetch_advisory(session, args.ghsa, repo)
+        advisory = fetch_advisory(session, args.ghsa, args.repo)
         if args.json:
             json.dump(advisory, sys.stdout, indent=2)
             sys.stdout.write('\n')
@@ -300,14 +266,10 @@ def main() -> int:
             print_advisory(advisory)
         return 0
 
-    if args.global_db:
-        advisories = fetch_global_advisories(
-            session, args.ecosystem, args.severity, args.cve)
-    else:
-        states = args.state if args.state else list(DEFAULT_STATES)
-        advisories = fetch_repo_advisories(session, args.repo, states)
-        if args.severity:
-            advisories = filter_severity(advisories, args.severity)
+    states = args.state if args.state else list(DEFAULT_STATES)
+    advisories = fetch_repo_advisories(session, args.repo, states)
+    if args.severity:
+        advisories = filter_severity(advisories, args.severity)
 
     if args.past_embargo:
         advisories = filter_past_embargo(advisories)
