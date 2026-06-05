@@ -118,6 +118,20 @@ def parse_patches(description: Optional[str]) -> Optional[str]:
     return m.group(1).strip() or None
 
 
+def parse_fixes(description: Optional[str]) -> list[str]:
+    '''Split the advisory's Patches section into individual fix entries.'''
+    patches = parse_patches(description)
+    if not patches:
+        return []
+    fixes: list[str] = []
+    for line in patches.splitlines():
+        # Drop leading markdown list markers ("- ", "* ", "1. ").
+        line = re.sub(r'^\s*(?:[-*+]|\d+\.)\s+', '', line).strip()
+        if line:
+            fixes.append(line)
+    return fixes
+
+
 def print_advisory(a: dict[str, Any]) -> None:
     def field(name: str, value: Any) -> None:
         if value in (None, '', [], {}):
@@ -213,6 +227,7 @@ CREATE TABLE IF NOT EXISTS advisories (
     cvss_score   REAL,
     cvss_vector  TEXT,
     cwes         TEXT,
+    fixes        TEXT,
     html_url     TEXT,
     created_at   TEXT,
     published_at TEXT,
@@ -226,9 +241,9 @@ CREATE TABLE IF NOT EXISTS advisories (
 UPSERT = '''
 INSERT INTO advisories (
     ghsa_id, repo, cve_id, summary, severity, state, cvss_score,
-    cvss_vector, cwes, html_url, created_at, published_at, updated_at,
-    embargo, raw, synced_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    cvss_vector, cwes, fixes, html_url, created_at, published_at,
+    updated_at, embargo, raw, synced_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(ghsa_id) DO UPDATE SET
     repo         = excluded.repo,
     cve_id       = excluded.cve_id,
@@ -238,6 +253,7 @@ ON CONFLICT(ghsa_id) DO UPDATE SET
     cvss_score   = excluded.cvss_score,
     cvss_vector  = excluded.cvss_vector,
     cwes         = excluded.cwes,
+    fixes        = excluded.fixes,
     html_url     = excluded.html_url,
     created_at   = excluded.created_at,
     published_at = excluded.published_at,
@@ -252,6 +268,7 @@ def advisory_row(a: dict[str, Any], repo: str,
                  synced_at: str) -> tuple[Any, ...]:
     cvss = a.get('cvss') or {}
     cwes = [c.get('cwe_id') for c in (a.get('cwes') or []) if c.get('cwe_id')]
+    fixes = parse_fixes(a.get('description'))
     created_at = a.get('created_at')
     return (
         a.get('ghsa_id'),
@@ -263,6 +280,7 @@ def advisory_row(a: dict[str, Any], repo: str,
         cvss.get('score'),
         cvss.get('vector_string'),
         json.dumps(cwes) if cwes else None,
+        json.dumps(fixes) if fixes else None,
         a.get('html_url'),
         created_at,
         a.get('published_at'),
