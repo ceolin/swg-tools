@@ -5,4 +5,5 @@ description = "Tools for the Zephyr Project security working group"
 requires-python = ">=3.13"
 dependencies = [
     "requests>=2.33.1",
+    "libsql>=0.1.11",
 ]

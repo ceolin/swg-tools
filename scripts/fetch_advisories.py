@@ -25,6 +25,15 @@ Examples:
 
     # Fetch a single advisory by GHSA id
     ./fetch_advisories.py --ghsa GHSA-xxxx-xxxx-xxxx
+
+    # Sync every advisory (all states) into a local Turso/libSQL database
+    ./fetch_advisories.py --sync-db advisories.db
+
+Turso sync:
+    --sync-db writes to a local libSQL database file. If the
+    TURSO_DATABASE_URL and TURSO_AUTH_TOKEN environment variables are
+    set, the local file is opened as an embedded replica and changes are
+    pushed to the remote Turso database after the sync.
 '''
 
 import argparse
@@ -78,6 +87,7 @@ def paginate(session: requests.Session, url: str,
 
 
 DEFAULT_STATES = ('draft', 'triage')
+ALL_STATES = ('draft', 'triage', 'published', 'closed')
 
 def get_embargo(created_at: str) -> str:
     embargo = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
@@ -222,6 +232,110 @@ def print_table(advisories: list[dict[str, Any]]) -> None:
                          embargo, summary))
 
 
+CREATE_TABLE = '''
+CREATE TABLE IF NOT EXISTS advisories (
+    ghsa_id      TEXT PRIMARY KEY,
+    cve_id       TEXT,
+    summary      TEXT,
+    severity     TEXT,
+    state        TEXT,
+    cvss_score   REAL,
+    cvss_vector  TEXT,
+    cwes         TEXT,
+    html_url     TEXT,
+    created_at   TEXT,
+    published_at TEXT,
+    updated_at   TEXT,
+    embargo      TEXT,
+    raw          TEXT NOT NULL,
+    synced_at    TEXT NOT NULL
+)
+'''
+
+UPSERT = '''
+INSERT INTO advisories (
+    ghsa_id, cve_id, summary, severity, state, cvss_score, cvss_vector,
+    cwes, html_url, created_at, published_at, updated_at, embargo,
+    raw, synced_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(ghsa_id) DO UPDATE SET
+    cve_id       = excluded.cve_id,
+    summary      = excluded.summary,
+    severity     = excluded.severity,
+    state        = excluded.state,
+    cvss_score   = excluded.cvss_score,
+    cvss_vector  = excluded.cvss_vector,
+    cwes         = excluded.cwes,
+    html_url     = excluded.html_url,
+    created_at   = excluded.created_at,
+    published_at = excluded.published_at,
+    updated_at   = excluded.updated_at,
+    embargo      = excluded.embargo,
+    raw          = excluded.raw,
+    synced_at    = excluded.synced_at
+'''
+
+
+def advisory_row(a: dict[str, Any], synced_at: str) -> tuple[Any, ...]:
+    cvss = a.get('cvss') or {}
+    cwes = [c.get('cwe_id') for c in (a.get('cwes') or []) if c.get('cwe_id')]
+    created_at = a.get('created_at')
+    return (
+        a.get('ghsa_id'),
+        a.get('cve_id'),
+        a.get('summary'),
+        (a.get('severity') or '').lower() or None,
+        a.get('state'),
+        cvss.get('score'),
+        cvss.get('vector_string'),
+        json.dumps(cwes) if cwes else None,
+        a.get('html_url'),
+        created_at,
+        a.get('published_at'),
+        a.get('updated_at'),
+        get_embargo(created_at) if created_at else None,
+        json.dumps(a, sort_keys=True),
+        synced_at,
+    )
+
+
+def sync_to_db(db_path: str,
+               advisories: list[dict[str, Any]]) -> int:
+    '''Upsert advisories into a local libSQL/Turso database.
+
+    When TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are set, the local file
+    is opened as an embedded replica and changes are pushed to the
+    remote Turso database.
+    '''
+    try:
+        import libsql
+    except ImportError:
+        sys.exit('error: the "libsql" package is required for --sync-db '
+                 '(install it, e.g. `uv add libsql`)')
+
+    sync_url = os.environ.get('TURSO_DATABASE_URL')
+    auth_token = os.environ.get('TURSO_AUTH_TOKEN')
+    if sync_url:
+        conn = libsql.connect(db_path, sync_url=sync_url,
+                              auth_token=auth_token)
+        conn.sync()
+    else:
+        conn = libsql.connect(db_path)
+
+    conn.execute(CREATE_TABLE)
+    synced_at = datetime.now().astimezone().isoformat()
+    count = 0
+    for a in advisories:
+        if not a.get('ghsa_id'):
+            continue
+        conn.execute(UPSERT, advisory_row(a, synced_at))
+        count += 1
+    conn.commit()
+    if sync_url:
+        conn.sync()
+    return count
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -237,6 +351,11 @@ def main() -> int:
                         help='filter by severity')
     parser.add_argument('--ghsa',
                         help='fetch a single advisory by GHSA id')
+    parser.add_argument('--sync-db', metavar='PATH',
+                        help='sync every advisory (all states) into the '
+                             'local libSQL/Turso database at PATH (set '
+                             'TURSO_DATABASE_URL and TURSO_AUTH_TOKEN to '
+                             'also push to a remote Turso database)')
     parser.add_argument('--past-embargo', action='store_true',
                         help='only show advisories whose 90-day embargo '
                              'period has already elapsed')
@@ -264,6 +383,13 @@ def main() -> int:
             sys.stdout.write('\n')
         else:
             print_advisory(advisory)
+        return 0
+
+    if args.sync_db:
+        advisories = fetch_repo_advisories(session, args.repo,
+                                           list(ALL_STATES))
+        count = sync_to_db(args.sync_db, advisories)
+        print(f'Synced {count} advisories to {args.sync_db}')
         return 0
 
     states = args.state if args.state else list(DEFAULT_STATES)

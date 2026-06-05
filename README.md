@@ -43,3 +43,22 @@ uv run scripts/fetch_advisories.py --ghsa GHSA-xxxx-xxxx-xxxx
 ```
 
 See `uv run scripts/fetch_advisories.py --help` for the full option list.
+
+## Syncing to a local Turso database
+
+`--sync-db` fetches every advisory (all states) and upserts them into a
+local libSQL/Turso database, keyed by GHSA id:
+
+```sh
+uv run scripts/fetch_advisories.py --sync-db advisories.db
+```
+
+To also push the data to a remote
+[Turso](https://turso.tech) database, open the local file as an embedded
+replica by setting:
+
+```sh
+export TURSO_DATABASE_URL=libsql://<your-db>.turso.io
+export TURSO_AUTH_TOKEN=<your-token>
+uv run scripts/fetch_advisories.py --sync-db advisories.db
+```
