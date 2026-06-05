@@ -4,36 +4,37 @@
 # SPDX-License-Identifier: Apache-2.0
 
 '''
-Fetch security advisories from GitHub using the REST API.
+Browse security advisories from a local Turso/libSQL database.
 
-This lists repository security advisories for zephyrproject-rtos/zephyr.
+All queries read from the local database; only --sync talks to GitHub.
+Run --sync first (and periodically) to populate or refresh the database
+with every advisory (all states) for the repository.
 
 Authentication:
-    A GitHub token is required for repository advisories. The token is
-    read from the GITHUB_TOKEN environment variable, or ~/.netrc for
-    github.com.
+    A GitHub token is required for --sync. The token is read from the
+    GITHUB_TOKEN environment variable, or ~/.netrc for github.com.
 
 Examples:
-    # Draft + triage advisories for zephyrproject-rtos/zephyr (default)
+    # Populate / refresh the database from GitHub
+    ./fetch_advisories.py --sync
+
+    # Draft + triage advisories (default), from the database
     ./fetch_advisories.py
 
     # Only published advisories, JSON output
     ./fetch_advisories.py --state published --json
 
-    # Fetch multiple explicit states
+    # Multiple explicit states
     ./fetch_advisories.py --state triage --state published
 
-    # Fetch a single advisory by GHSA id
+    # A single advisory by GHSA id
     ./fetch_advisories.py --ghsa GHSA-xxxx-xxxx-xxxx
 
-    # Sync every advisory (all states) into a local Turso/libSQL database
-    ./fetch_advisories.py --sync-db advisories.db
-
 Turso sync:
-    --sync-db writes to a local libSQL database file. If the
-    TURSO_DATABASE_URL and TURSO_AUTH_TOKEN environment variables are
-    set, the local file is opened as an embedded replica and changes are
-    pushed to the remote Turso database after the sync.
+    The database is a local libSQL file (--db, default advisories.db).
+    If TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are set, the file is
+    opened as an embedded replica: reads pull the latest data from the
+    remote Turso database, and --sync pushes changes back to it.
 '''
 
 import argparse
@@ -94,17 +95,6 @@ def get_embargo(created_at: str) -> str:
     return (embargo + timedelta(days=90)).strftime('%Y-%m-%d')
 
 
-def is_past_embargo(created_at: Optional[str]) -> bool:
-    if not created_at:
-        return False
-    return date.fromisoformat(get_embargo(created_at)) < date.today()
-
-
-def filter_past_embargo(
-        advisories: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [a for a in advisories if is_past_embargo(a.get('created_at'))]
-
-
 def fetch_repo_advisories(session: requests.Session, repo: str,
                           states: list[str]) -> list[dict[str, Any]]:
     # The GitHub API accepts only one state per call, so fetch each
@@ -114,26 +104,6 @@ def fetch_repo_advisories(session: requests.Session, repo: str,
     for state in states:
         result.extend(paginate(session, url, {'state': state}))
     return result
-
-
-def fetch_advisory(session: requests.Session, ghsa: str,
-                   repo: str) -> dict[str, Any]:
-    url = f'{GITHUB_API}/repos/{repo}/security-advisories/{ghsa}'
-    resp = session.get(url)
-    if resp.status_code == 401:
-        sys.exit('error: authentication failed; check your GitHub token')
-    if resp.status_code == 404:
-        sys.exit(f'error: advisory {ghsa} not found')
-    if resp.status_code == 403 and 'rate limit' in resp.text.lower():
-        sys.exit('error: GitHub API rate limit exceeded')
-    resp.raise_for_status()
-    return resp.json()
-
-
-def filter_severity(advisories: list[dict[str, Any]],
-                    severity: str) -> list[dict[str, Any]]:
-    return [a for a in advisories
-            if (a.get('severity') or '').lower() == severity.lower()]
 
 
 PATCHES_RE = re.compile(r'(?ims)^#{1,6}\s*Patches\s*$\s*(.*?)(?=^#{1,6}\s|\Z)')
@@ -235,6 +205,7 @@ def print_table(advisories: list[dict[str, Any]]) -> None:
 CREATE_TABLE = '''
 CREATE TABLE IF NOT EXISTS advisories (
     ghsa_id      TEXT PRIMARY KEY,
+    repo         TEXT,
     cve_id       TEXT,
     summary      TEXT,
     severity     TEXT,
@@ -254,11 +225,12 @@ CREATE TABLE IF NOT EXISTS advisories (
 
 UPSERT = '''
 INSERT INTO advisories (
-    ghsa_id, cve_id, summary, severity, state, cvss_score, cvss_vector,
-    cwes, html_url, created_at, published_at, updated_at, embargo,
-    raw, synced_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ghsa_id, repo, cve_id, summary, severity, state, cvss_score,
+    cvss_vector, cwes, html_url, created_at, published_at, updated_at,
+    embargo, raw, synced_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(ghsa_id) DO UPDATE SET
+    repo         = excluded.repo,
     cve_id       = excluded.cve_id,
     summary      = excluded.summary,
     severity     = excluded.severity,
@@ -276,12 +248,14 @@ ON CONFLICT(ghsa_id) DO UPDATE SET
 '''
 
 
-def advisory_row(a: dict[str, Any], synced_at: str) -> tuple[Any, ...]:
+def advisory_row(a: dict[str, Any], repo: str,
+                 synced_at: str) -> tuple[Any, ...]:
     cvss = a.get('cvss') or {}
     cwes = [c.get('cwe_id') for c in (a.get('cwes') or []) if c.get('cwe_id')]
     created_at = a.get('created_at')
     return (
         a.get('ghsa_id'),
+        repo,
         a.get('cve_id'),
         a.get('summary'),
         (a.get('severity') or '').lower() or None,
@@ -299,70 +273,88 @@ def advisory_row(a: dict[str, Any], synced_at: str) -> tuple[Any, ...]:
     )
 
 
-def sync_to_db(db_path: str,
-               advisories: list[dict[str, Any]]) -> int:
-    '''Upsert advisories into a local libSQL/Turso database.
+def turso_credentials() -> tuple[Optional[str], Optional[str]]:
+    return (os.environ.get('TURSO_DATABASE_URL'),
+            os.environ.get('TURSO_AUTH_TOKEN'))
+
+
+def connect_db(db_path: str) -> Any:
+    '''Open the local libSQL database.
 
     When TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are set, the local file
-    is opened as an embedded replica and changes are pushed to the
-    remote Turso database.
+    is opened as an embedded replica and the latest data is pulled from
+    the remote Turso database first.
     '''
     try:
         import libsql
     except ImportError:
-        sys.exit('error: the "libsql" package is required for --sync-db '
-                 '(install it, e.g. `uv add libsql`)')
+        sys.exit('error: the "libsql" package is required (install it, '
+                 'e.g. `uv add libsql`)')
 
-    sync_url = os.environ.get('TURSO_DATABASE_URL')
-    auth_token = os.environ.get('TURSO_AUTH_TOKEN')
+    sync_url, auth_token = turso_credentials()
     if sync_url:
         conn = libsql.connect(db_path, sync_url=sync_url,
                               auth_token=auth_token)
         conn.sync()
-    else:
-        conn = libsql.connect(db_path)
+        return conn
+    return libsql.connect(db_path)
 
+
+def has_advisories_table(conn: Any) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'advisories'").fetchone()
+    return row is not None
+
+
+def sync_to_db(db_path: str, repo: str,
+               advisories: list[dict[str, Any]]) -> int:
+    '''Upsert advisories into the local database, then push to Turso.'''
+    conn = connect_db(db_path)
     conn.execute(CREATE_TABLE)
     synced_at = datetime.now().astimezone().isoformat()
     count = 0
     for a in advisories:
         if not a.get('ghsa_id'):
             continue
-        conn.execute(UPSERT, advisory_row(a, synced_at))
+        conn.execute(UPSERT, advisory_row(a, repo, synced_at))
         count += 1
     conn.commit()
-    if sync_url:
+    if turso_credentials()[0]:
         conn.sync()
     return count
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--repo', default=DEFAULT_REPO,
-                        help=f'owner/name repo slug (default: {DEFAULT_REPO})')
-    parser.add_argument('--state', action='append',
-                        choices=['triage', 'draft', 'published', 'closed'],
-                        help='repo advisories: state to fetch; may be given '
-                             'multiple times (default: draft and triage)')
-    parser.add_argument('--severity',
-                        choices=['low', 'medium', 'high', 'critical'],
-                        help='filter by severity')
-    parser.add_argument('--ghsa',
-                        help='fetch a single advisory by GHSA id')
-    parser.add_argument('--sync-db', metavar='PATH',
-                        help='sync every advisory (all states) into the '
-                             'local libSQL/Turso database at PATH (set '
-                             'TURSO_DATABASE_URL and TURSO_AUTH_TOKEN to '
-                             'also push to a remote Turso database)')
-    parser.add_argument('--past-embargo', action='store_true',
-                        help='only show advisories whose 90-day embargo '
-                             'period has already elapsed')
-    parser.add_argument('--json', action='store_true',
-                        help='emit raw JSON instead of a summary table')
-    args = parser.parse_args()
+def query_advisories(conn: Any, repo: str, states: list[str],
+                     severity: Optional[str],
+                     past_embargo: bool) -> list[dict[str, Any]]:
+    clauses = ['repo = ?']
+    params: list[Any] = [repo]
+    if states:
+        placeholders = ', '.join('?' for _ in states)
+        clauses.append(f'state IN ({placeholders})')
+        params.extend(states)
+    if severity:
+        clauses.append('severity = ?')
+        params.append(severity.lower())
+    if past_embargo:
+        clauses.append('embargo IS NOT NULL AND embargo < ?')
+        params.append(date.today().isoformat())
+    sql = ('SELECT raw FROM advisories WHERE ' + ' AND '.join(clauses)
+           + ' ORDER BY created_at DESC')
+    rows = conn.execute(sql, params).fetchall()
+    return [json.loads(r[0]) for r in rows]
 
+
+def get_advisory_from_db(conn: Any, ghsa: str) -> dict[str, Any]:
+    row = conn.execute('SELECT raw FROM advisories WHERE ghsa_id = ?',
+                       (ghsa,)).fetchone()
+    if row is None:
+        sys.exit(f'error: advisory {ghsa} not found in the local database')
+    return json.loads(row[0])
+
+
+def github_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({
         'Accept': 'application/vnd.github+json',
@@ -370,14 +362,59 @@ def main() -> int:
         'User-Agent': 'zephyr-fetch-advisories',
     })
     token = get_token()
-    if token:
-        session.headers['Authorization'] = f'Bearer {token}'
-    else:
-        sys.exit('error: a GitHub token is required for repository '
-                 'advisories (set GITHUB_TOKEN or configure ~/.netrc)')
+    if not token:
+        sys.exit('error: a GitHub token is required to sync advisories '
+                 '(set GITHUB_TOKEN or configure ~/.netrc)')
+    session.headers['Authorization'] = f'Bearer {token}'
+    return session
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--db', default='advisories.db', metavar='PATH',
+                        help='local libSQL/Turso database file '
+                             '(default: advisories.db)')
+    parser.add_argument('--sync', action='store_true',
+                        help='refresh the database from GitHub (fetches '
+                             'every advisory state for --repo); the only '
+                             'command that contacts GitHub')
+    parser.add_argument('--repo', default=DEFAULT_REPO,
+                        help=f'owner/name repo slug (default: {DEFAULT_REPO})')
+    parser.add_argument('--state', action='append',
+                        choices=['triage', 'draft', 'published', 'closed'],
+                        help='filter by state; may be given multiple times '
+                             '(default: draft and triage)')
+    parser.add_argument('--severity',
+                        choices=['low', 'medium', 'high', 'critical'],
+                        help='filter by severity')
+    parser.add_argument('--ghsa',
+                        help='show a single advisory by GHSA id')
+    parser.add_argument('--past-embargo', action='store_true',
+                        help='only show advisories whose 90-day embargo '
+                             'period has already elapsed')
+    parser.add_argument('--json', action='store_true',
+                        help='emit raw JSON instead of a summary table')
+    args = parser.parse_args()
+
+    if args.sync:
+        session = github_session()
+        advisories = fetch_repo_advisories(session, args.repo,
+                                           list(ALL_STATES))
+        count = sync_to_db(args.db, args.repo, advisories)
+        print(f'Synced {count} advisories from {args.repo} to {args.db}')
+        return 0
+
+    if not turso_credentials()[0] and not os.path.exists(args.db):
+        sys.exit(f'error: no advisory database at {args.db}; '
+                 'run with --sync first')
+    conn = connect_db(args.db)
+    if not has_advisories_table(conn):
+        sys.exit(f'error: no advisories in {args.db}; run with --sync first')
 
     if args.ghsa:
-        advisory = fetch_advisory(session, args.ghsa, args.repo)
+        advisory = get_advisory_from_db(conn, args.ghsa)
         if args.json:
             json.dump(advisory, sys.stdout, indent=2)
             sys.stdout.write('\n')
@@ -385,20 +422,9 @@ def main() -> int:
             print_advisory(advisory)
         return 0
 
-    if args.sync_db:
-        advisories = fetch_repo_advisories(session, args.repo,
-                                           list(ALL_STATES))
-        count = sync_to_db(args.sync_db, advisories)
-        print(f'Synced {count} advisories to {args.sync_db}')
-        return 0
-
     states = args.state if args.state else list(DEFAULT_STATES)
-    advisories = fetch_repo_advisories(session, args.repo, states)
-    if args.severity:
-        advisories = filter_severity(advisories, args.severity)
-
-    if args.past_embargo:
-        advisories = filter_past_embargo(advisories)
+    advisories = query_advisories(conn, args.repo, states, args.severity,
+                                  args.past_embargo)
 
     if args.json:
         json.dump(advisories, sys.stdout, indent=2)
