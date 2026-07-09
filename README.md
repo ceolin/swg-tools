@@ -4,9 +4,12 @@ Tools for the Zephyr Project security working group.
 
 ## Contents
 
-- `scripts/fetch_advisories.py` — fetch security advisories from GitHub, either
-  for a specific repository (default: `zephyrproject-rtos/zephyr`) or
-  from the global GitHub Advisory Database.
+- `scripts/ghsa` — a single command-line tool for working with GitHub
+  Security Advisories (GHSA) for `zephyrproject-rtos/zephyr`. It syncs
+  advisories into a local database, browses them, generates advisory
+  drafts from vulnerability reports, creates them on GitHub, and renders
+  an HTML dashboard.
+- `ai-commands/` — prompt files for AI assistants that wrap the tool.
 
 ## Setup
 
@@ -16,49 +19,109 @@ Install dependencies into a project-local virtualenv:
 uv sync
 ```
 
+Run the tool via `uv run` so dependencies are resolved automatically:
+
+```sh
+uv run scripts/ghsa --help
+```
+
 ## Authentication
 
-A GitHub token is required for repository advisories. The token is
-read from:
+Credentials are read from the environment (or `~/.netrc`); nothing is
+stored in the repository.
 
-1. The `GITHUB_TOKEN` environment variable, or
-2. `~/.netrc` for `github.com`.
+| Variable | Used by | Purpose |
+| --- | --- | --- |
+| `GITHUB_TOKEN` (or `~/.netrc` for `github.com`) | `sync`, `create` | GitHub API access |
+| `OPENROUTER_API_KEY` | `generate` | OpenRouter LLM access |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | `sync`, `list`, `show`, `dashboard` | optional remote Turso replica |
+| `ZEPHYR_BASE` | `generate` | Zephyr checkout, for maintainer lookup |
 
-## Usage
+## Commands
 
-Run the script via `uv run` so dependencies are resolved automatically:
+The tool reads from a local libSQL/Turso database (default
+`advisories.db`); only `sync` and `create` contact GitHub. Run `sync`
+first to populate the database.
 
-```sh
-# Draft + triage advisories for zephyrproject-rtos/zephyr (default)
-uv run scripts/fetch_advisories.py
-
-# Only published advisories, JSON output
-uv run scripts/fetch_advisories.py --state published --json
-
-# Multiple explicit states
-uv run scripts/fetch_advisories.py --state triage --state published
-
-# A single advisory by GHSA id
-uv run scripts/fetch_advisories.py --ghsa GHSA-xxxx-xxxx-xxxx
-```
-
-See `uv run scripts/fetch_advisories.py --help` for the full option list.
-
-## Syncing to a local Turso database
-
-`--sync-db` fetches every advisory (all states) and upserts them into a
-local libSQL/Turso database, keyed by GHSA id:
+### `sync` — refresh the local database from GitHub
 
 ```sh
-uv run scripts/fetch_advisories.py --sync-db advisories.db
+uv run scripts/ghsa sync
 ```
 
-To also push the data to a remote
-[Turso](https://turso.tech) database, open the local file as an embedded
-replica by setting:
+Fetches every advisory (all states) for the repository and upserts them
+into the database, keyed by GHSA id.
+
+### `list` — browse advisories
+
+```sh
+# Draft + triage advisories (default)
+uv run scripts/ghsa list
+
+# Only published advisories, as JSON
+uv run scripts/ghsa list --state published --json
+
+# Multiple states, filtered by severity
+uv run scripts/ghsa list --state triage --state published --severity high
+
+# Only advisories whose 90-day embargo has elapsed
+uv run scripts/ghsa list --past-embargo
+```
+
+### `show` — display a single advisory
+
+```sh
+uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx
+uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx --json
+```
+
+### `generate` — draft an advisory from a report email
+
+Sends a vulnerability report email to OpenRouter and produces a Markdown
+advisory plus a GitHub API JSON payload. Maintainers of the affected
+files (looked up via `$ZEPHYR_BASE/scripts/get_maintainer.py`) and the
+`zephyrproject-rtos/security` team are added as collaborators.
+
+```sh
+# From a file, writing to ./advisories/
+uv run scripts/ghsa generate --email report.eml
+
+# From stdin, printed to stdout
+cat report.eml | uv run scripts/ghsa generate --email - --stdout
+```
+
+### `create` — create a draft advisory on GitHub
+
+Takes the JSON payload produced by `generate`:
+
+```sh
+uv run scripts/ghsa create advisories/<slug>-github.json
+```
+
+### `dashboard` — render an HTML dashboard
+
+Writes a single self-contained HTML file (inline CSS/SVG/JS, no external
+assets) summarizing the database — stat tiles, severity/state/CWE/CVSS
+charts, a created-over-time timeline, and a searchable, sortable table.
+
+```sh
+uv run scripts/ghsa dashboard --open
+uv run scripts/ghsa dashboard -o report.html
+```
+
+See `uv run scripts/ghsa <command> --help` for the full option list of
+any command.
+
+## Syncing to a remote Turso database
+
+The database is a local libSQL file (`--db`, default `advisories.db`).
+If `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are set, the file is
+opened as an embedded [Turso](https://turso.tech) replica: reads pull
+the latest data from the remote database, and `sync` pushes changes back
+to it.
 
 ```sh
 export TURSO_DATABASE_URL=libsql://<your-db>.turso.io
 export TURSO_AUTH_TOKEN=<your-token>
-uv run scripts/fetch_advisories.py --sync-db advisories.db
+uv run scripts/ghsa sync
 ```
