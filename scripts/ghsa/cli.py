@@ -5,11 +5,13 @@
 import json
 import os
 import sys
-from datetime import date
+import webbrowser
+from datetime import date, datetime
 from typing import Any, Optional
 
 import click
 
+from . import dashboard as dash_mod
 from . import db as db_mod
 from . import generate as gen_mod
 from . import github as gh_mod
@@ -34,6 +36,7 @@ def cli() -> None:
       ghsa show GHSA-xxxx-xxxx-xxxx
       ghsa generate --email report.eml
       ghsa create advisory-github.json
+      ghsa dashboard --open
     '''
 
 
@@ -259,3 +262,34 @@ def create(json_file: str, repo: str) -> None:
     click.echo(f'Created : {advisory.get("ghsa_id", "(unknown)")}')
     if advisory.get('html_url'):
         click.echo(f'URL     : {advisory["html_url"]}')
+
+
+@cli.command()
+@click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
+              help='local database file')
+@click.option('--repo', default=gh_mod.DEFAULT_REPO, show_default=True,
+              help='filter by repo slug')
+@click.option('--output', '-o', default='advisories-dashboard.html',
+              metavar='FILE', show_default=True,
+              help='output HTML file')
+@click.option('--open', 'open_browser', is_flag=True,
+              help='open the dashboard in a browser after writing it')
+def dashboard(db: str, repo: str, output: str, open_browser: bool) -> None:
+    '''Render an HTML dashboard of the advisory database.'''
+    _require_db(db)
+    conn = db_mod.connect_db(db)
+    _require_table(conn, db)
+    advisories = db_mod.query_advisories(
+        conn, repo, list(db_mod.ALL_STATES), severity=None, past_embargo=False)
+    if not advisories:
+        raise click.ClickException(
+            f'no advisories for {repo} in {db}; run `ghsa sync` first')
+
+    generated_at = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z')
+    html_doc = dash_mod.render_dashboard(advisories, repo, generated_at)
+    with open(output, 'w', encoding='utf-8') as fh:
+        fh.write(html_doc)
+
+    click.echo(f'Dashboard written to {output} ({len(advisories)} advisories)')
+    if open_browser:
+        webbrowser.open(f'file://{os.path.abspath(output)}')
