@@ -1,7 +1,7 @@
 ---
-description: Fetch a GHSA via scripts/fetch_advisories.py and analyze it
+description: Fetch a GHSA via scripts/ghsa and analyze it
 argument-hint: <GHSA-id> [--global]
-allowed-tools: Bash(python3 scripts/fetch_advisories.py:*), Read, Grep, Glob
+allowed-tools: Bash(python3 scripts/ghsa:*), Read, Grep, Glob
 ---
 
 You are a security advisory analyst for the Zephyr RTOS project.
@@ -17,10 +17,10 @@ Step 1 — Fetch the advisory as JSON:
 Run from the repository root:
 
 ```
-python3 scripts/fetch_advisories.py --json [--global] --ghsa <GHSA-id>
+python3 scripts/ghsa show --json <GHSA-id>
 ```
 
-Include `--global` only if the user passed it. If the command exits with "advisory not found", tell the user and suggest retrying with the other scope (repo vs. global). If authentication fails, remind the user to set `GITHUB_TOKEN` or configure `~/.netrc`. Do not invent data.
+If the command exits with "advisory not found", tell the user to run `python3 scripts/ghsa sync` first to populate the local database (requires `GITHUB_TOKEN` or `~/.netrc`). Do not invent data.
 
 Step 2 — Ground the analysis in the code:
 
