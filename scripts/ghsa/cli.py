@@ -258,10 +258,25 @@ def create(json_file: str, repo: str) -> None:
     except (OSError, json.JSONDecodeError) as exc:
         raise click.ClickException(f'cannot read JSON file: {exc}')
 
-    advisory = gh_mod.post_advisory(payload, repo)
-    click.echo(f'Created : {advisory.get("ghsa_id", "(unknown)")}')
+    # collaborating_teams/users are only accepted by the update endpoint,
+    # so split them out of the create payload and apply them via PATCH.
+    collaborators = {k: payload.pop(k) for k in
+                     ('collaborating_teams', 'collaborating_users')
+                     if k in payload}
+
+    session = gh_mod.github_session()
+    advisory = gh_mod.post_advisory(payload, repo, session)
+    ghsa_id = advisory.get('ghsa_id')
+    click.echo(f'Created : {ghsa_id or "(unknown)"}')
     if advisory.get('html_url'):
         click.echo(f'URL     : {advisory["html_url"]}')
+
+    if collaborators and ghsa_id:
+        gh_mod.patch_advisory(ghsa_id, collaborators, repo, session)
+        added = ', '.join(
+            collaborators.get('collaborating_teams', [])
+            + collaborators.get('collaborating_users', []))
+        click.echo(f'Collaborators added: {added}')
 
 
 @cli.command()

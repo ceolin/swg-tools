@@ -75,15 +75,34 @@ def fetch_advisories(session: requests.Session, repo: str,
     return result
 
 
-def post_advisory(payload: dict[str, Any], repo: str) -> dict[str, Any]:
-    '''Create a draft security advisory and return the GitHub response.'''
-    session = github_session()
-    url = f'{GITHUB_API}/repos/{repo}/security-advisories'
-    resp = session.post(url, json=payload, timeout=30)
+def _check_advisory_response(resp: requests.Response) -> None:
     if resp.status_code == 403:
         sys.exit('error: GitHub permission denied; ensure your token has '
                  'the `repo` scope and write access to security advisories')
     if resp.status_code == 422:
         sys.exit(f'error: GitHub rejected the payload: {resp.json()}')
     resp.raise_for_status()
+
+
+def post_advisory(payload: dict[str, Any], repo: str,
+                  session: Optional[requests.Session] = None) -> dict[str, Any]:
+    '''Create a draft security advisory and return the GitHub response.'''
+    session = session or github_session()
+    url = f'{GITHUB_API}/repos/{repo}/security-advisories'
+    resp = session.post(url, json=payload, timeout=30)
+    _check_advisory_response(resp)
+    return resp.json()
+
+
+def patch_advisory(ghsa_id: str, payload: dict[str, Any], repo: str,
+                   session: Optional[requests.Session] = None) -> dict[str, Any]:
+    '''Update an existing security advisory and return the GitHub response.
+
+    Some fields (notably ``collaborating_teams`` and ``collaborating_users``)
+    are only accepted by the update endpoint, not by create.
+    '''
+    session = session or github_session()
+    url = f'{GITHUB_API}/repos/{repo}/security-advisories/{ghsa_id}'
+    resp = session.patch(url, json=payload, timeout=30)
+    _check_advisory_response(resp)
     return resp.json()
