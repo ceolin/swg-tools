@@ -19,13 +19,8 @@ symbols, and file paths as they appear in the report.>
 <version range description; e.g. "v4.3.0 through v4.4.0 (…); fixed on main by <short-sha>">
 
 ### Fix
-Fixed (merged) in https://github.com/zephyrproject-rtos/zephyr/commit/<full-sha>
 
-Projected fixed version: **<next-release>** (<qualification, e.g. "the fix is
-merged on `main` but not yet released; this forecast should be confirmed
-against the actual release">).
-
-Introduced by: <short-sha> (<commit subject>), first released in v<version>
+<Proposed fix from the email. Only add it if it is part of the report>
 
 ### Evidence
 - <file>:<line> — <one-line explanation>
