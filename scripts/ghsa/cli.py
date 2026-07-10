@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import webbrowser
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 import click
@@ -205,13 +205,13 @@ def show(ghsa_id: str, db: str, as_json: bool) -> None:
 @click.option('--model', default=gen_mod.DEFAULT_MODEL, show_default=True,
               help='OpenRouter model to use')
 @click.option('--embargo', metavar='DATE',
-              help='embargo date as YYYY-MM-DD (default: today)')
+              help='embargo date as YYYY-MM-DD (default: today + 90 days)')
 @click.option('--stdout', 'to_stdout', is_flag=True,
               help='print the advisory to stdout instead of writing files')
 def generate(email: str, output: str, model: str,
              embargo: Optional[str], to_stdout: bool) -> None:
     '''Generate a GHSA advisory document from a vulnerability report email.'''
-    embargo_date = embargo or date.today().isoformat()
+    embargo_date = embargo or (date.today() + timedelta(days=90)).isoformat()
 
     click.echo('Reading email…', err=True)
     email_content = gen_mod.read_email(email)
