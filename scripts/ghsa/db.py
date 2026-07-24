@@ -57,8 +57,10 @@ ON CONFLICT(ghsa_id) DO UPDATE SET
     updated_at   = excluded.updated_at,
     embargo      = excluded.embargo,
     raw          = excluded.raw,
-    synced_at    = excluded.synced_at'''
-
+    synced_at    = excluded.synced_at
+WHERE excluded.updated_at IS NOT NULL
+  AND (advisories.updated_at IS NULL
+       OR excluded.updated_at > advisories.updated_at)'''
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -157,7 +159,9 @@ def sync_to_db(db_path: str, repo: str,
         if not a.get('ghsa_id'):
             continue
         conn.execute(_UPSERT, _advisory_row(a, repo, synced_at))
-        count += 1
+        row = conn.execute('SELECT changes()').fetchone()
+        changes = int(row[0] or 0)
+        count += changes
     conn.commit()
     if turso_credentials()[0]:
         conn.sync()
