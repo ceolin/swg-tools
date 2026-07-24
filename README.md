@@ -7,7 +7,7 @@ Tools for the Zephyr Project security working group.
 - `scripts/ghsa` — a single command-line tool for working with GitHub
   Security Advisories (GHSA) for `zephyrproject-rtos/zephyr`. It syncs
   advisories into a local database, browses them, generates advisory
-  drafts from vulnerability reports, creates them on GitHub, and renders
+  drafts from vulnerability reports, creates or updates them on GitHub, and renders
   an HTML dashboard.
 - `ai-commands/` — prompt files for AI assistants that wrap the tool.
 
@@ -32,7 +32,7 @@ stored in the repository.
 
 | Variable | Used by | Purpose |
 | --- | --- | --- |
-| `GITHUB_TOKEN` (or `~/.netrc` for `github.com`) | `sync`, `create` | GitHub API access |
+| `GITHUB_TOKEN` (or `~/.netrc` for `github.com`) | `sync`, `create`, `update` | GitHub API access |
 | `OPENROUTER_API_KEY` | `generate` | OpenRouter LLM access |
 | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | `sync`, `list`, `show`, `dashboard` | optional remote Turso replica |
 | `ZEPHYR_BASE` | `generate` | Zephyr checkout, for maintainer lookup |
@@ -40,7 +40,7 @@ stored in the repository.
 ## Commands
 
 The tool reads from a local libSQL/Turso database (default
-`advisories.db`); only `sync` and `create` contact GitHub. Run `sync`
+`advisories.db`); only `sync`, `create`, and `update` contact GitHub. Run `sync`
 first to populate the database.
 
 ### `sync` — refresh the local database from GitHub
@@ -99,6 +99,19 @@ Takes the JSON payload produced by `generate`:
 
 ```sh
 uv run scripts/ghsa create advisories/<slug>-github.json
+```
+
+### `update` — update an advisory on GitHub
+
+Adds the standard Patches and For more information sections when missing,
+along with an embargo date calculated as 90 days after the advisory was
+created. Existing fields are left unchanged.
+
+```sh
+uv run scripts/ghsa update GHSA-xxxx-xxxx-xxxx --missing-fields
+
+# Preview the resulting advisory without updating GitHub
+uv run scripts/ghsa update GHSA-xxxx-xxxx-xxxx --missing-fields --dry-run
 ```
 
 ### `dashboard` — render an HTML dashboard

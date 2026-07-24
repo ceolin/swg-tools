@@ -75,6 +75,18 @@ def fetch_advisories(session: requests.Session, repo: str,
     return result
 
 
+def fetch_advisory(ghsa_id: str, repo: str,
+                   session: Optional[requests.Session] = None) -> dict[str, Any]:
+    '''Fetch a single repository security advisory.'''
+    session = session or github_session()
+    url = f'{GITHUB_API}/repos/{repo}/security-advisories/{ghsa_id}'
+    resp = session.get(url, timeout=30)
+    if resp.status_code == 404:
+        sys.exit(f'error: advisory {ghsa_id} not found in {repo}')
+    _check_advisory_response(resp)
+    return resp.json()
+
+
 def _check_advisory_response(resp: requests.Response) -> None:
     if resp.status_code == 403:
         sys.exit('error: GitHub permission denied; ensure your token has '

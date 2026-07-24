@@ -4,6 +4,7 @@
 
 import json
 import os
+import re
 import sys
 import webbrowser
 from datetime import date, datetime, timedelta
@@ -18,6 +19,14 @@ from . import github as gh_mod
 from . import maintainers as maint_mod
 
 _DEFAULT_DB = 'advisories.db'
+
+_MISSING_PATCHES_SECTION = '''\
+<!-- zepsec:patch -->
+### Patches
+
+| Branch | Pull request | Status |
+| --- | --- | --- |
+<!-- zepsec:patch -->'''
 
 
 # ─── Root group ───────────────────────────────────────────────────────────────
@@ -279,6 +288,61 @@ def create(json_file: str, repo: str) -> None:
             collaborators.get('collaborating_teams', [])
             + collaborators.get('collaborating_users', []))
         click.echo(f'Collaborators added: {added}')
+
+
+@cli.command()
+@click.argument('ghsa_id')
+@click.option('--repo', default=gh_mod.DEFAULT_REPO, show_default=True,
+              help='GitHub owner/name repo slug')
+@click.option('--missing-fields', is_flag=True,
+              help='add fields that are missing from the advisory')
+@click.option('--dry-run', is_flag=True,
+              help='print the updated description without changing GitHub')
+def update(ghsa_id: str, repo: str, missing_fields: bool,
+           dry_run: bool) -> None:
+    '''Update an existing advisory on GitHub.'''
+    if not missing_fields:
+        raise click.UsageError('no update selected; use --missing-fields')
+
+    session = gh_mod.github_session()
+    advisory = gh_mod.fetch_advisory(ghsa_id, repo, session)
+    description = advisory.get('description') or ''
+    missing: list[str] = []
+
+    if '<!-- zepsec:patch -->' not in description:
+        missing.append(_MISSING_PATCHES_SECTION)
+
+    if not re.search(r'(?im)^#{1,6}\s+For more information\s*$',
+                     description):
+        missing.append(gen_mod.FOR_MORE_INFO_SECTION)
+
+    if not re.search(r'(?im)^embargo:\s*\d{4}-\d{2}-\d{2}\s*$',
+                     description):
+        created_at = advisory.get('created_at')
+        if not created_at:
+            raise click.ClickException(
+                f'advisory {ghsa_id} has no creation date; '
+                'cannot calculate its embargo date')
+        missing.append(f'embargo: {db_mod.get_embargo(created_at)}')
+
+    if not missing:
+        if dry_run:
+            click.echo(description)
+        else:
+            click.echo(f'{ghsa_id}: no missing fields')
+        return
+
+    description = description.rstrip()
+    if description:
+        description += '\n\n'
+    description += '\n\n'.join(missing)
+    if dry_run:
+        click.echo(description)
+        return
+
+    gh_mod.patch_advisory(
+        ghsa_id, {'description': description}, repo, session)
+    click.echo(f'{ghsa_id}: added {len(missing)} missing field(s)')
 
 
 @cli.command()
