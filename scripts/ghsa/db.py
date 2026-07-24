@@ -87,7 +87,22 @@ def parse_patches(description: Optional[str]) -> Optional[str]:
     m = PATCHES_RE.search(description)
     if not m:
         return None
-    return m.group(1).strip() or None
+    patches = m.group(1).strip()
+    if not patches:
+        return None
+
+    table_separator_seen = False
+    for line in patches.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
+        if len(cells) < 2:
+            continue
+        if all(re.fullmatch(r':?-{3,}:?', cell) for cell in cells):
+            table_separator_seen = True
+            continue
+        if table_separator_seen and any(cells):
+            return patches
+
+    return None
 
 
 def parse_fixes(description: Optional[str]) -> list[str]:
