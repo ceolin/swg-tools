@@ -2,7 +2,7 @@
 
 The advisory document must follow this exact structure.  Replace every
 `<PLACEHOLDER>` with content derived from the vulnerability report.  Do not
-add or remove top-level sections.
+add or remove top-level sections. Avoid changing the original contents as much as possible!
 
 ---
 
