@@ -213,12 +213,23 @@ def list_cmd(db: str, repo: str, states: tuple[str, ...],
 @click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
               help='local database file')
 @click.option('--json', 'as_json', is_flag=True, help='emit raw JSON')
-def show(ghsa_id: str, db: str, as_json: bool) -> None:
+@click.option('--open', 'open_browser', is_flag=True,
+              help='open the advisory in the default web browser')
+def show(ghsa_id: str, db: str, as_json: bool, open_browser: bool) -> None:
     '''Show a single advisory by GHSA id.'''
     _require_db(db)
     conn = db_mod.connect_db(db)
     _require_table(conn, db)
     advisory = db_mod.get_advisory(conn, ghsa_id)
+
+    if open_browser:
+        url = advisory.get('html_url')
+        if not url:
+            raise click.ClickException(
+                f'advisory {ghsa_id} has no GitHub URL')
+        webbrowser.open(url)
+        return
+
     if as_json:
         json.dump(advisory, sys.stdout, indent=2)
         sys.stdout.write('\n')

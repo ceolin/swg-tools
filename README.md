@@ -79,6 +79,7 @@ uv run scripts/ghsa list --missing-fields
 ```sh
 uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx
 uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx --json
+uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx --open
 ```
 
 ### `generate` — draft an advisory from a report email
