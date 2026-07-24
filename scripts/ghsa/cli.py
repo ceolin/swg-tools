@@ -141,6 +141,15 @@ def _require_table(conn: Any, db_path: str) -> None:
             f'no advisories in {db_path}; run `ghsa sync` first')
 
 
+def _has_patches_section(description: str) -> bool:
+    return '<!-- zepsec:patch -->' in description
+
+
+def _has_for_more_info_section(description: str) -> bool:
+    return bool(re.search(
+        r'(?im)^#{1,6}\s+For more information\s*$', description))
+
+
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
 @cli.command()
@@ -171,11 +180,13 @@ def sync(db: str, repo: str) -> None:
               help='only show advisories whose 90-day embargo has elapsed')
 @click.option('--synced', is_flag=True,
               help='only show advisories synced at or after the global marker')
+@click.option('--missing-fields', is_flag=True,
+              help='only show advisories missing standard sections')
 @click.option('--json', 'as_json', is_flag=True,
               help='emit raw JSON instead of a summary table')
 def list_cmd(db: str, repo: str, states: tuple[str, ...],
              severity: Optional[str], past_embargo: bool,
-             synced: bool, as_json: bool) -> None:
+             synced: bool, missing_fields: bool, as_json: bool) -> None:
     '''List advisories from the local database.'''
     _require_db(db)
     conn = db_mod.connect_db(db)
@@ -183,6 +194,13 @@ def list_cmd(db: str, repo: str, states: tuple[str, ...],
     resolved = list(states) if states else list(db_mod.DEFAULT_STATES)
     advisories = db_mod.query_advisories(conn, repo, resolved,
                                          severity, past_embargo, synced)
+    if missing_fields:
+        advisories = [
+            advisory for advisory in advisories
+            if not _has_patches_section(advisory.get('description') or '')
+            or not _has_for_more_info_section(
+                advisory.get('description') or '')
+        ]
     if as_json:
         json.dump(advisories, sys.stdout, indent=2)
         sys.stdout.write('\n')
@@ -309,11 +327,10 @@ def update(ghsa_id: str, repo: str, missing_fields: bool,
     description = advisory.get('description') or ''
     missing: list[str] = []
 
-    if '<!-- zepsec:patch -->' not in description:
+    if not _has_patches_section(description):
         missing.append(_MISSING_PATCHES_SECTION)
 
-    if not re.search(r'(?im)^#{1,6}\s+For more information\s*$',
-                     description):
+    if not _has_for_more_info_section(description):
         missing.append(gen_mod.FOR_MORE_INFO_SECTION)
 
     if not re.search(r'(?im)^embargo:\s*\d{4}-\d{2}-\d{2}\s*$',
