@@ -160,18 +160,20 @@ def sync(db: str, repo: str) -> None:
               help='filter by severity')
 @click.option('--past-embargo', is_flag=True,
               help='only show advisories whose 90-day embargo has elapsed')
+@click.option('--synced', is_flag=True,
+              help='only show advisories synced at or after the global marker')
 @click.option('--json', 'as_json', is_flag=True,
               help='emit raw JSON instead of a summary table')
 def list_cmd(db: str, repo: str, states: tuple[str, ...],
              severity: Optional[str], past_embargo: bool,
-             as_json: bool) -> None:
+             synced: bool, as_json: bool) -> None:
     '''List advisories from the local database.'''
     _require_db(db)
     conn = db_mod.connect_db(db)
     _require_table(conn, db)
     resolved = list(states) if states else list(db_mod.DEFAULT_STATES)
     advisories = db_mod.query_advisories(conn, repo, resolved,
-                                         severity, past_embargo)
+                                         severity, past_embargo, synced)
     if as_json:
         json.dump(advisories, sys.stdout, indent=2)
         sys.stdout.write('\n')

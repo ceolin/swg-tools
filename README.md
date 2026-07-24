@@ -66,6 +66,9 @@ uv run scripts/ghsa list --state triage --state published --severity high
 
 # Only advisories whose 90-day embargo has elapsed
 uv run scripts/ghsa list --past-embargo
+
+# Only advisories changed in the latest database sync
+uv run scripts/ghsa list --synced
 ```
 
 ### `show` — display a single advisory

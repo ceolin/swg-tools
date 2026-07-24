@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS advisories (
     synced_at    TEXT NOT NULL
 )'''
 
+_CREATE_SYNC_METADATA_TABLE = '''\
+CREATE TABLE IF NOT EXISTS sync_metadata (
+    name      TEXT PRIMARY KEY,
+    synced_at TEXT NOT NULL
+)'''
+
 _UPSERT = '''\
 INSERT INTO advisories (
     ghsa_id, repo, cve_id, summary, severity, state, cvss_score,
@@ -61,6 +67,12 @@ ON CONFLICT(ghsa_id) DO UPDATE SET
 WHERE excluded.updated_at IS NOT NULL
   AND (advisories.updated_at IS NULL
        OR excluded.updated_at > advisories.updated_at)'''
+
+_UPSERT_GLOBAL_SYNCED_AT = '''\
+INSERT INTO sync_metadata (name, synced_at)
+VALUES ('global', ?)
+ON CONFLICT(name) DO UPDATE SET
+    synced_at = excluded.synced_at'''
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -146,6 +158,13 @@ def has_advisories_table(conn: Any) -> bool:
     return row is not None
 
 
+def has_sync_metadata_table(conn: Any) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_metadata'"
+    ).fetchone()
+    return row is not None
+
+
 # ─── Write ───────────────────────────────────────────────────────────────────
 
 def sync_to_db(db_path: str, repo: str,
@@ -153,6 +172,7 @@ def sync_to_db(db_path: str, repo: str,
     '''Upsert advisories into the local database, then push to Turso.'''
     conn = connect_db(db_path)
     conn.execute(_CREATE_TABLE)
+    conn.execute(_CREATE_SYNC_METADATA_TABLE)
     synced_at = datetime.now().astimezone().isoformat()
     count = 0
     for a in advisories:
@@ -162,6 +182,8 @@ def sync_to_db(db_path: str, repo: str,
         row = conn.execute('SELECT changes()').fetchone()
         changes = int(row[0] or 0)
         count += changes
+    if count:
+        conn.execute(_UPSERT_GLOBAL_SYNCED_AT, (synced_at,))
     conn.commit()
     if turso_credentials()[0]:
         conn.sync()
@@ -172,9 +194,20 @@ def sync_to_db(db_path: str, repo: str,
 
 def query_advisories(conn: Any, repo: str, states: list[str],
                      severity: Optional[str],
-                     past_embargo: bool) -> list[dict[str, Any]]:
+                     past_embargo: bool,
+                     synced_since_global: bool = False) -> list[dict[str, Any]]:
     clauses = ['repo = ?']
     params: list[Any] = [repo]
+    if synced_since_global:
+        if not has_sync_metadata_table(conn):
+            return []
+        row = conn.execute(
+            'SELECT synced_at FROM sync_metadata WHERE name = ?', ('global',)
+        ).fetchone()
+        if row is None:
+            return []
+        clauses.append('synced_at >= ?')
+        params.append(row[0])
     if states:
         placeholders = ', '.join('?' for _ in states)
         clauses.append(f'state IN ({placeholders})')
