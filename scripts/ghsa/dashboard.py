@@ -504,6 +504,7 @@ a:hover {{ text-decoration: underline; }}
       <input type="search" id="q" placeholder="Search GHSA, CVE, or summary…"
              autocomplete="off">
       <span id="sev-filters"></span>
+      <span id="state-filters"></span>
     </div>
     <div class="table-wrap">
       <table id="tbl">
@@ -526,8 +527,10 @@ const DATA = {data_json};
 const SEV_COLORS = {severity_colors};
 const SEV_ORDER = ["critical","high","medium","low","unknown"];
 const SEV_RANK = Object.fromEntries(SEV_ORDER.map((s,i)=>[s,i]));
+const STATE_ORDER = ["triage","draft"];
 let sort = {{k:"created", dir:-1}};
 let activeSev = new Set();
+let activeState = new Set();
 
 const rowsEl = document.getElementById("rows");
 const countEl = document.getElementById("count");
@@ -550,6 +553,7 @@ function render() {{
   const q = qEl.value.trim().toLowerCase();
   let rows = DATA.filter(r => {{
     if (activeSev.size && !activeSev.has(r.severity)) return false;
+    if (activeState.size && !activeState.has(r.state)) return false;
     if (!q) return true;
     return (r.ghsa + " " + r.cve + " " + r.summary).toLowerCase().includes(q);
   }});
@@ -596,6 +600,19 @@ SEV_ORDER.forEach(s => {{
     render();
   }});
   sevWrap.appendChild(b);
+}});
+const stateWrap = document.getElementById("state-filters");
+STATE_ORDER.forEach(s => {{
+  const b = document.createElement("button");
+  b.className = "chip";
+  b.setAttribute("aria-pressed", "false");
+  b.textContent = s;
+  b.addEventListener("click", () => {{
+    if (activeState.has(s)) {{ activeState.delete(s); b.setAttribute("aria-pressed","false"); }}
+    else {{ activeState.add(s); b.setAttribute("aria-pressed","true"); }}
+    render();
+  }});
+  stateWrap.appendChild(b);
 }});
 qEl.addEventListener("input", render);
 render();
