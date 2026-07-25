@@ -400,7 +400,7 @@ body {{
 header {{ padding: 28px 32px 8px; }}
 header h1 {{ margin: 0; font-size: 22px; }}
 header .sub {{ color: var(--ink-2); margin-top: 4px; }}
-main {{ padding: 16px 32px 48px; max-width: 1200px; }}
+main {{ padding: 16px 32px 48px; max-width: 1560px; }}
 .tiles {{
   display: grid; gap: 12px; margin-bottom: 20px;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -472,6 +472,8 @@ thead th .arrow {{ color: var(--muted); font-size: 10px; }}
 tbody td {{ padding: 7px 10px; border-bottom: 1px solid var(--grid);
   vertical-align: top; }}
 tbody td.num {{ font-variant-numeric: tabular-nums; }}
+thead th:nth-child(2), tbody td:nth-child(2) {{ min-width: 150px; white-space: nowrap; }}
+thead th:nth-child(6), tbody td:nth-child(6) {{ min-width: 116px; white-space: nowrap; }}
 tbody tr:hover {{ background: color-mix(in srgb, var(--series-1) 6%, transparent); }}
 a {{ color: var(--series-1); text-decoration: none; }}
 a:hover {{ text-decoration: underline; }}
