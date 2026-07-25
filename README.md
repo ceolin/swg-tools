@@ -1,5 +1,9 @@
 # swg-tools
 
+<p align="center">
+  <img src="assets/swg-tools-mascot.png" alt="swg-tools kite mascot holding a security shield with a bandage" width="280">
+</p>
+
 Tools for the Zephyr Project security working group.
 
 ## Contents
