@@ -233,16 +233,25 @@ def query_advisories(conn: Any, repo: str, states: list[str],
     if past_embargo:
         clauses.append('embargo IS NOT NULL AND embargo < ?')
         params.append(date.today().isoformat())
-    sql = ('SELECT raw FROM advisories WHERE ' + ' AND '.join(clauses)
+    sql = ('SELECT raw, embargo FROM advisories WHERE ' + ' AND '.join(clauses)
            + ' ORDER BY created_at DESC')
     rows = conn.execute(sql, params).fetchall()
-    return [json.loads(r[0]) for r in rows]
+    advisories = []
+    for raw, embargo in rows:
+        advisory = json.loads(raw)
+        if embargo and not advisory.get('embargo'):
+            advisory['embargo'] = embargo
+        advisories.append(advisory)
+    return advisories
 
 
 def get_advisory(conn: Any, ghsa_id: str) -> dict[str, Any]:
     row = conn.execute(
-        'SELECT raw FROM advisories WHERE ghsa_id = ?', (ghsa_id,)
+        'SELECT raw, embargo FROM advisories WHERE ghsa_id = ?', (ghsa_id,)
     ).fetchone()
     if row is None:
         sys.exit(f'error: advisory {ghsa_id} not found in the local database')
-    return json.loads(row[0])
+    advisory = json.loads(row[0])
+    if row[1] and not advisory.get('embargo'):
+        advisory['embargo'] = row[1]
+    return advisory
