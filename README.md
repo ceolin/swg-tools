@@ -84,6 +84,12 @@ uv run scripts/ghsa list --missing-fields
 uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx
 uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx --json
 uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx --open
+
+# Only the stored analysis/triage notes, as Markdown
+uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx --analysis > triage.md
+
+# …or with its timestamp, as JSON
+uv run scripts/ghsa show GHSA-xxxx-xxxx-xxxx --analysis --json
 ```
 
 ### `generate` — draft an advisory from a report email
@@ -120,6 +126,17 @@ uv run scripts/ghsa update GHSA-xxxx-xxxx-xxxx --missing-fields
 
 # Preview the resulting advisory without updating GitHub
 uv run scripts/ghsa update GHSA-xxxx-xxxx-xxxx --missing-fields --dry-run
+```
+
+`--analysis` stores the contents of a Markdown file as the advisory's
+analysis/triage notes in the local database (`analysis` column), stamping
+the write time in `analysis_updated_at`. Both are local-only fields: they
+are never sent to GitHub and are preserved across `sync`. Use `-` to read
+from stdin, and `show` to read the notes back.
+
+```sh
+uv run scripts/ghsa update GHSA-xxxx-xxxx-xxxx --analysis triage.md
+cat triage.md | uv run scripts/ghsa update GHSA-xxxx-xxxx-xxxx --analysis -
 ```
 
 ### `dashboard` — render an HTML dashboard

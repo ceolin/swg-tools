@@ -31,9 +31,18 @@ CREATE TABLE IF NOT EXISTS advisories (
     published_at TEXT,
     updated_at   TEXT,
     embargo      TEXT,
+    analysis     TEXT,
+    analysis_updated_at TEXT,
     raw          TEXT NOT NULL,
     synced_at    TEXT NOT NULL
 )'''
+
+# Columns added after the initial schema; applied to existing databases by
+# ensure_schema().
+_EXTRA_COLUMNS = (
+    ('analysis', 'TEXT'),
+    ('analysis_updated_at', 'TEXT'),
+)
 
 _CREATE_SYNC_METADATA_TABLE = '''\
 CREATE TABLE IF NOT EXISTS sync_metadata (
@@ -180,6 +189,18 @@ def has_sync_metadata_table(conn: Any) -> bool:
     return row is not None
 
 
+def ensure_schema(conn: Any) -> None:
+    '''Add columns introduced after a database was first created.'''
+    if not has_advisories_table(conn):
+        return
+    existing = {row[1] for row in
+                conn.execute('PRAGMA table_info(advisories)').fetchall()}
+    for name, decl in _EXTRA_COLUMNS:
+        if name not in existing:
+            conn.execute(f'ALTER TABLE advisories ADD COLUMN {name} {decl}')
+            conn.commit()
+
+
 # ─── Write ───────────────────────────────────────────────────────────────────
 
 def sync_to_db(db_path: str, repo: str,
@@ -188,6 +209,7 @@ def sync_to_db(db_path: str, repo: str,
     conn = connect_db(db_path)
     conn.execute(_CREATE_TABLE)
     conn.execute(_CREATE_SYNC_METADATA_TABLE)
+    ensure_schema(conn)
     synced_at = datetime.now().astimezone().isoformat()
     count = 0
     for a in advisories:
@@ -203,6 +225,29 @@ def sync_to_db(db_path: str, repo: str,
     if turso_credentials()[0]:
         conn.sync()
     return count
+
+
+def set_analysis(db_path: str, ghsa_id: str,
+                 analysis: Optional[str]) -> Optional[str]:
+    '''Store the triage/analysis text of an advisory, then push to Turso.
+
+    Returns the timestamp recorded alongside it (None when clearing).
+    '''
+    conn = connect_db(db_path)
+    if not has_advisories_table(conn):
+        sys.exit(f'error: no advisories in {db_path}; run `ghsa sync` first')
+    ensure_schema(conn)
+    updated_at = datetime.now().astimezone().isoformat() if analysis else None
+    conn.execute(
+        'UPDATE advisories SET analysis = ?, analysis_updated_at = ? '
+        'WHERE ghsa_id = ?', (analysis, updated_at, ghsa_id))
+    row = conn.execute('SELECT changes()').fetchone()
+    if not int(row[0] or 0):
+        sys.exit(f'error: advisory {ghsa_id} not found in the local database')
+    conn.commit()
+    if turso_credentials()[0]:
+        conn.sync()
+    return updated_at
 
 
 # ─── Read ────────────────────────────────────────────────────────────────────
@@ -245,13 +290,24 @@ def query_advisories(conn: Any, repo: str, states: list[str],
     return advisories
 
 
+def has_column(conn: Any, name: str) -> bool:
+    return any(row[1] == name for row in
+               conn.execute('PRAGMA table_info(advisories)').fetchall())
+
+
 def get_advisory(conn: Any, ghsa_id: str) -> dict[str, Any]:
+    columns = ['raw', 'embargo']
+    extra = [name for name, _ in _EXTRA_COLUMNS if has_column(conn, name)]
     row = conn.execute(
-        'SELECT raw, embargo FROM advisories WHERE ghsa_id = ?', (ghsa_id,)
+        f'SELECT {", ".join(columns + extra)} FROM advisories '
+        'WHERE ghsa_id = ?', (ghsa_id,)
     ).fetchone()
     if row is None:
         sys.exit(f'error: advisory {ghsa_id} not found in the local database')
     advisory = json.loads(row[0])
     if row[1] and not advisory.get('embargo'):
         advisory['embargo'] = row[1]
+    for name, value in zip(extra, row[len(columns):]):
+        if value:
+            advisory[name] = value
     return advisory

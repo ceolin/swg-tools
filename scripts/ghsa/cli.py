@@ -85,6 +85,12 @@ def _print_advisory(a: dict[str, Any]) -> None:
     if patches:
         click.echo(f'\nPatches:\n{patches}')
 
+    if a.get('analysis'):
+        updated = a.get('analysis_updated_at')
+        click.echo(f'\nAnalysis (updated {updated}):' if updated
+                   else '\nAnalysis:')
+        click.echo(a['analysis'])
+
     vulns = a.get('vulnerabilities') or []
     if vulns:
         click.echo('\nAffected packages:')
@@ -150,6 +156,32 @@ def _has_for_more_info_section(description: str) -> bool:
         r'(?im)^#{1,6}\s+For more information\s*$', description))
 
 
+def _update_analysis(ghsa_id: str, db_path: str, markdown_file: str,
+                     dry_run: bool) -> None:
+    '''Store the contents of a Markdown file as the advisory analysis.'''
+    try:
+        if markdown_file == '-':
+            content = sys.stdin.read()
+        else:
+            with open(markdown_file, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+    except OSError as exc:
+        raise click.ClickException(f'cannot read analysis file: {exc}')
+
+    content = content.strip()
+    if not content:
+        raise click.ClickException(f'analysis file {markdown_file} is empty')
+
+    if dry_run:
+        click.echo(content)
+        return
+
+    _require_db(db_path)
+    updated_at = db_mod.set_analysis(db_path, ghsa_id, content)
+    click.echo(f'{ghsa_id}: analysis stored ({len(content)} chars) '
+               f'at {updated_at}')
+
+
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
 @cli.command()
@@ -213,9 +245,12 @@ def list_cmd(db: str, repo: str, states: tuple[str, ...],
 @click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
               help='local database file')
 @click.option('--json', 'as_json', is_flag=True, help='emit raw JSON')
+@click.option('--analysis', 'only_analysis', is_flag=True,
+              help='print only the stored analysis/triage notes')
 @click.option('--open', 'open_browser', is_flag=True,
               help='open the advisory in the default web browser')
-def show(ghsa_id: str, db: str, as_json: bool, open_browser: bool) -> None:
+def show(ghsa_id: str, db: str, as_json: bool, only_analysis: bool,
+         open_browser: bool) -> None:
     '''Show a single advisory by GHSA id.'''
     _require_db(db)
     conn = db_mod.connect_db(db)
@@ -228,6 +263,20 @@ def show(ghsa_id: str, db: str, as_json: bool, open_browser: bool) -> None:
             raise click.ClickException(
                 f'advisory {ghsa_id} has no GitHub URL')
         webbrowser.open(url)
+        return
+
+    if only_analysis:
+        if not advisory.get('analysis'):
+            raise click.ClickException(
+                f'advisory {ghsa_id} has no analysis; '
+                'add one with `ghsa update --analysis FILE`')
+        if as_json:
+            json.dump({key: advisory.get(key) for key in
+                       ('ghsa_id', 'analysis', 'analysis_updated_at')},
+                      sys.stdout, indent=2)
+            sys.stdout.write('\n')
+        else:
+            click.echo(advisory['analysis'])
         return
 
     if as_json:
@@ -321,17 +370,29 @@ def create(json_file: str, repo: str) -> None:
 
 @cli.command()
 @click.argument('ghsa_id')
+@click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
+              help='local database file (used by --analysis)')
 @click.option('--repo', default=gh_mod.DEFAULT_REPO, show_default=True,
               help='GitHub owner/name repo slug')
 @click.option('--missing-fields', is_flag=True,
               help='add fields that are missing from the advisory')
+@click.option('--analysis', metavar='FILE',
+              type=click.Path(exists=True, dir_okay=False, allow_dash=True),
+              help='Markdown file whose contents become the advisory '
+                   'analysis/triage notes in the local database')
 @click.option('--dry-run', is_flag=True,
               help='print the updated description without changing GitHub')
-def update(ghsa_id: str, repo: str, missing_fields: bool,
-           dry_run: bool) -> None:
-    '''Update an existing advisory on GitHub.'''
-    if not missing_fields:
-        raise click.UsageError('no update selected; use --missing-fields')
+def update(ghsa_id: str, db: str, repo: str, missing_fields: bool,
+           analysis: Optional[str], dry_run: bool) -> None:
+    '''Update an existing advisory on GitHub or its local analysis notes.'''
+    if not missing_fields and not analysis:
+        raise click.UsageError(
+            'no update selected; use --missing-fields and/or --analysis')
+
+    if analysis:
+        _update_analysis(ghsa_id, db, analysis, dry_run)
+        if not missing_fields:
+            return
 
     session = gh_mod.github_session()
     advisory = gh_mod.fetch_advisory(ghsa_id, repo, session)
