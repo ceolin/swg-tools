@@ -252,6 +252,29 @@ def set_analysis(db_path: str, ghsa_id: str,
 
 # ─── Read ────────────────────────────────────────────────────────────────────
 
+def has_column(conn: Any, name: str) -> bool:
+    return any(row[1] == name for row in
+               conn.execute('PRAGMA table_info(advisories)').fetchall())
+
+
+def _select_columns(conn: Any) -> tuple[str, list[str]]:
+    '''Build the select list for reads: raw, embargo, plus any extra column
+    already present in this database.'''
+    extra = [name for name, _ in _EXTRA_COLUMNS if has_column(conn, name)]
+    return ', '.join(['raw', 'embargo'] + extra), extra
+
+
+def _hydrate(row: tuple[Any, ...], extra: list[str]) -> dict[str, Any]:
+    '''Turn a selected row into an advisory dict.'''
+    advisory = json.loads(row[0])
+    if row[1] and not advisory.get('embargo'):
+        advisory['embargo'] = row[1]
+    for name, value in zip(extra, row[2:]):
+        if value:
+            advisory[name] = value
+    return advisory
+
+
 def query_advisories(conn: Any, repo: str, states: list[str],
                      severity: Optional[str],
                      past_embargo: bool,
@@ -278,36 +301,18 @@ def query_advisories(conn: Any, repo: str, states: list[str],
     if past_embargo:
         clauses.append('embargo IS NOT NULL AND embargo < ?')
         params.append(date.today().isoformat())
-    sql = ('SELECT raw, embargo FROM advisories WHERE ' + ' AND '.join(clauses)
+    columns, extra = _select_columns(conn)
+    sql = (f'SELECT {columns} FROM advisories WHERE ' + ' AND '.join(clauses)
            + ' ORDER BY created_at DESC')
     rows = conn.execute(sql, params).fetchall()
-    advisories = []
-    for raw, embargo in rows:
-        advisory = json.loads(raw)
-        if embargo and not advisory.get('embargo'):
-            advisory['embargo'] = embargo
-        advisories.append(advisory)
-    return advisories
-
-
-def has_column(conn: Any, name: str) -> bool:
-    return any(row[1] == name for row in
-               conn.execute('PRAGMA table_info(advisories)').fetchall())
+    return [_hydrate(row, extra) for row in rows]
 
 
 def get_advisory(conn: Any, ghsa_id: str) -> dict[str, Any]:
-    columns = ['raw', 'embargo']
-    extra = [name for name, _ in _EXTRA_COLUMNS if has_column(conn, name)]
+    columns, extra = _select_columns(conn)
     row = conn.execute(
-        f'SELECT {", ".join(columns + extra)} FROM advisories '
-        'WHERE ghsa_id = ?', (ghsa_id,)
+        f'SELECT {columns} FROM advisories WHERE ghsa_id = ?', (ghsa_id,)
     ).fetchone()
     if row is None:
         sys.exit(f'error: advisory {ghsa_id} not found in the local database')
-    advisory = json.loads(row[0])
-    if row[1] and not advisory.get('embargo'):
-        advisory['embargo'] = row[1]
-    for name, value in zip(extra, row[len(columns):]):
-        if value:
-            advisory[name] = value
-    return advisory
+    return _hydrate(row, extra)

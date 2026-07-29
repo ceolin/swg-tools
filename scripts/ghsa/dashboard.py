@@ -292,6 +292,8 @@ def _table_records(advisories: list[dict[str, Any]]) -> list[dict[str, Any]]:
             'created': (a.get('created_at') or '')[:10],
             'summary': (a.get('summary') or '').replace('\n', ' '),
             'url': a.get('html_url') or '',
+            'analysis': a.get('analysis') or '',
+            'analysis_at': a.get('analysis_updated_at') or '',
         })
     return records
 
@@ -349,7 +351,9 @@ def render_dashboard(advisories: list[dict[str, Any]], repo: str,
         'Advisories created over time',
         _timeline(agg['months']), wide=True)
 
-    data_json = json.dumps(records, separators=(',', ':'))
+    # Escape "</" so a record (notably an analysis) containing "</script>"
+    # cannot terminate the inline <script> block early.
+    data_json = json.dumps(records, separators=(',', ':')).replace('</', r'<\/')
 
     return _PAGE.format(
         repo=_esc(repo),
@@ -361,8 +365,30 @@ def render_dashboard(advisories: list[dict[str, Any]], repo: str,
         cvss_card=cvss_card,
         timeline_card=timeline_card,
         severity_colors=json.dumps(SEVERITY_COLOR),
+        analysis_css=json.dumps(_ANALYSIS_CSS),
         data_json=data_json,
     )
+
+
+# Stylesheet for the standalone analysis page opened from the table. Kept as a
+# plain string (injected as a JS literal) so the dashboard stays self-contained.
+_ANALYSIS_CSS = '''
+:root { color-scheme: light dark;
+  --plane: #f9f9f7; --ink: #0b0b0b; --ink-2: #52514e;
+  --border: rgba(11,11,11,.10); }
+@media (prefers-color-scheme: dark) {
+  :root { --plane: #0d0d0d; --ink: #fff; --ink-2: #c3c2b7;
+    --border: rgba(255,255,255,.10); }
+}
+body { margin: 0; background: var(--plane); color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 28px 32px 14px; border-bottom: 1px solid var(--border); }
+header h1 { margin: 0; font-size: 20px; }
+header .sub { color: var(--ink-2); margin-top: 4px; font-size: 13px; }
+pre { margin: 0; padding: 24px 32px 56px; max-width: 100ch;
+  white-space: pre-wrap; overflow-wrap: break-word;
+  font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+'''
 
 
 _PAGE = '''<!doctype html>
@@ -515,6 +541,7 @@ a:hover {{ text-decoration: underline; }}
           <th data-k="state">State <span class="arrow"></span></th>
           <th data-k="cvss">CVSS <span class="arrow"></span></th>
           <th data-k="embargo">Embargo <span class="arrow"></span></th>
+          <th data-k="analysis_at">Analysis <span class="arrow"></span></th>
           <th data-k="summary">Summary <span class="arrow"></span></th>
         </tr></thead>
         <tbody id="rows"></tbody>
@@ -525,6 +552,8 @@ a:hover {{ text-decoration: underline; }}
 <script>
 const DATA = {data_json};
 const SEV_COLORS = {severity_colors};
+const ANALYSIS_CSS = {analysis_css};
+const BY_GHSA = Object.fromEntries(DATA.map(r => [r.ghsa, r]));
 const SEV_ORDER = ["critical","high","medium","low","unknown"];
 const SEV_RANK = Object.fromEntries(SEV_ORDER.map((s,i)=>[s,i]));
 const STATE_ORDER = ["triage","draft"];
@@ -544,6 +573,31 @@ function sevChip(s) {{
   return '<span class="sev-chip"><span class="dot" style="background:'
     + SEV_COLORS[s] + '"></span>' + s + '</span>';
 }}
+function analysisLink(r) {{
+  if (!r.analysis) return "—";
+  const tip = r.analysis_at ? ' title="updated ' + esc(r.analysis_at) + '"' : "";
+  return '<a href="#" class="analysis" data-ghsa="' + esc(r.ghsa) + '"'
+    + tip + ">View</a>";
+}}
+function openAnalysis(r) {{
+  const w = window.open("", "_blank");
+  if (!w) return;
+  const sub = (r.analysis_at ? "analysis updated " + r.analysis_at : "analysis")
+    + (r.summary ? " · " + r.summary : "");
+  w.document.write('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    + "<title>" + esc(r.ghsa) + " — analysis</title><style>" + ANALYSIS_CSS
+    + "</style></head><body><header><h1>" + esc(r.ghsa) + "</h1>"
+    + '<div class="sub">' + esc(sub) + "</div></header><pre>"
+    + esc(r.analysis) + "</pre></body></html>");
+  w.document.close();
+}}
+rowsEl.addEventListener("click", ev => {{
+  const a = ev.target.closest("a.analysis");
+  if (!a) return;
+  ev.preventDefault();
+  openAnalysis(BY_GHSA[a.dataset.ghsa]);
+}});
 function cmp(a, b, k) {{
   if (k === "severity") return SEV_RANK[a.severity] - SEV_RANK[b.severity];
   if (k === "cvss") return (a.cvss ?? -1) - (b.cvss ?? -1);
@@ -570,6 +624,7 @@ function render() {{
       + "<td>" + esc(r.state) + "</td>"
       + '<td class="num">' + (r.cvss ?? "—") + "</td>"
       + '<td class="num">' + esc(r.embargo || "—") + "</td>"
+      + "<td>" + analysisLink(r) + "</td>"
       + "<td>" + esc(r.summary) + "</td>"
       + "</tr>";
   }}).join("");

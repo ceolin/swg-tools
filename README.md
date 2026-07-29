@@ -145,6 +145,10 @@ Writes a single self-contained HTML file (inline CSS/SVG/JS, no external
 assets) summarizing the database — stat tiles, severity/state/CWE/CVSS
 charts, a created-over-time timeline, and a searchable, sortable table.
 
+The table's `Analysis` column links to the notes stored by
+`update --analysis`; the link opens them in a new tab. The notes are
+embedded in the HTML file, so the page stays self-contained.
+
 ```sh
 uv run scripts/ghsa dashboard --open
 uv run scripts/ghsa dashboard -o report.html
