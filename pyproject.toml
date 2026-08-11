@@ -8,3 +8,20 @@ dependencies = [
     "requests>=2.33.1",
     "libsql>=0.1.11",
 ]
+
+[project.scripts]
+ghsa = "ghsa.cli:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "scripts"}
+
+[tool.setuptools.packages.find]
+where = ["scripts"]
+include = ["ghsa*"]
+
+[tool.setuptools.package-data]
+ghsa = ["*.md"]
