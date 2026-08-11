@@ -18,8 +18,14 @@
 ;;
 ;;     M-x ghsa-generate-from-article
 ;;
-;; The raw article is piped to the tool on standard input and the run is
-;; asynchronous, so Emacs stays responsive while the model call happens.
+;; Or from any buffer holding a vulnerability report (e.g. a fetched web
+;; page or a pasted report), optionally with a region selected:
+;;
+;;     M-x ghsa-generate-from-buffer
+;;
+;; Either way the text is piped to the tool on standard input and the
+;; run is asynchronous, so Emacs stays responsive while the model call
+;; happens.
 ;; Output (progress on stderr, results on stdout) appears in the
 ;; `ghsa-output-buffer'.  By default the tool writes the advisory and the
 ;; GitHub JSON payload under advisories/ in `ghsa-directory'; with a
@@ -113,16 +119,12 @@ selected."
           (message "ghsa generate finished (see %s)" (buffer-name buf))
         (message "ghsa generate failed (see %s)" (buffer-name buf))))))
 
-;;;###autoload
-(defun ghsa-generate-from-article (&optional preview)
-  "Run `ghsa generate' on the current Gnus article.
+(defun ghsa--run-generate (text &optional preview)
+  "Run `ghsa generate', feeding it TEXT on standard input.
 
-The raw article is fed to the tool on standard input.  With a
-prefix argument PREVIEW, pass --stdout so the advisory is printed
-to the output buffer instead of written to files."
-  (interactive "P")
-  (let* ((email (ghsa--article-text))
-         (default-directory (or ghsa-directory default-directory))
+With PREVIEW non-nil, pass --stdout so the advisory is printed to
+the output buffer instead of written to files."
+  (let* ((default-directory (or ghsa-directory default-directory))
          (ghsa-args (append ghsa-command
                             (list "generate" "--email" "-")
                             (when preview '("--stdout"))))
@@ -158,10 +160,34 @@ to the output buffer instead of written to files."
                  :connection-type 'pipe
                  :noquery t
                  :sentinel #'ghsa--sentinel)))
-      (process-send-string proc email)
+      (process-send-string proc text)
       (process-send-eof proc)
       (message "ghsa generate running…")
       proc)))
+
+;;;###autoload
+(defun ghsa-generate-from-article (&optional preview)
+  "Run `ghsa generate' on the current Gnus article.
+
+The raw article is fed to the tool on standard input.  With a
+prefix argument PREVIEW, pass --stdout so the advisory is printed
+to the output buffer instead of written to files."
+  (interactive "P")
+  (ghsa--run-generate (ghsa--article-text) preview))
+
+;;;###autoload
+(defun ghsa-generate-from-buffer (&optional preview)
+  "Run `ghsa generate' on the contents of the current buffer.
+
+Uses the active region instead of the whole buffer when one is
+set.  With a prefix argument PREVIEW, pass --stdout so the
+advisory is printed to the output buffer instead of written to
+files."
+  (interactive "P")
+  (let ((text (if (use-region-p)
+                  (buffer-substring-no-properties (region-beginning) (region-end))
+                (buffer-substring-no-properties (point-min) (point-max)))))
+    (ghsa--run-generate text preview)))
 
 (provide 'ghsa)
 ;;; ghsa.el ends here
