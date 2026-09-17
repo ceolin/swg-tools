@@ -9,10 +9,12 @@ uses the reserved status palette, state uses the categorical palette,
 counts carry direct labels, and a searchable table backs every chart.
 '''
 
+import base64
 import html
 import json
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from . import db as db_mod
@@ -29,6 +31,11 @@ SEVERITY_COLOR = {
 
 # State → categorical palette slots 1-4 (themed via CSS variables).
 STATE_ORDER = ('draft', 'triage', 'published', 'closed')
+
+# Embedded in the generated HTML so the self-contained dashboard keeps its
+# favicon when copied away from the repository.
+_FAVICON_PATH = (
+    Path(__file__).resolve().parents[2] / 'assets' / 'swg-tools-favicon.png')
 
 # CVSS rating bands per the CVSS spec, used to colour histogram columns.
 CVSS_BANDS = (
@@ -314,6 +321,11 @@ def _card(title: str, body: str, *, wide: bool = False,
             f'{body}</section>')
 
 
+def _favicon_data_uri() -> str:
+    encoded = base64.b64encode(_FAVICON_PATH.read_bytes()).decode('ascii')
+    return f'data:image/png;base64,{encoded}'
+
+
 def render_dashboard(advisories: list[dict[str, Any]], repo: str,
                      generated_at: str) -> str:
     today = generated_at[:10]
@@ -367,6 +379,7 @@ def render_dashboard(advisories: list[dict[str, Any]], repo: str,
         severity_colors=json.dumps(SEVERITY_COLOR),
         analysis_css=json.dumps(_ANALYSIS_CSS),
         data_json=data_json,
+        favicon=_favicon_data_uri(),
     )
 
 
@@ -396,6 +409,7 @@ _PAGE = '''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="{favicon}">
 <title>Zephyr advisory dashboard — {repo}</title>
 <style>
 :root {{
