@@ -45,9 +45,11 @@
 
 ;;; Code:
 
-(require 'gnus)
-(require 'gnus-sum)
-(require 'gnus-art)
+;; Gnus is required lazily in `ghsa--article-text' so the rest of the
+;; file (and dependants like ghsa-list.el) load without pulling it in.
+(declare-function gnus-alive-p "gnus")
+(declare-function gnus-summary-select-article "gnus-sum")
+(defvar gnus-original-article-buffer)
 
 (defgroup ghsa nil
   "Draft GHSA advisories from Gnus articles."
@@ -69,8 +71,7 @@ resolved relative to `ghsa-directory'.  When `ghsa-venv-activate'
 is set the program is resolved from the activated virtualenv."
   :type '(repeat string))
 
-(defcustom ghsa-venv-activate
-  (expand-file-name "~/p/zephyrproject/.venv/bin/activate")
+(defcustom ghsa-venv-activate ""
   "Path to a Python virtualenv activate script to source before running.
 It is sourced in `ghsa-shell' and then `ghsa-command' is exec'd,
 so the tool runs inside that virtualenv.  Set to nil to run
@@ -85,10 +86,38 @@ so the tool runs inside that virtualenv.  Set to nil to run
   "Name of the buffer that receives ghsa output."
   :type 'string)
 
+(defun ghsa--command (args)
+  "Return the process command list that runs the ghsa tool with ARGS.
+ARGS are appended to `ghsa-command'.  When `ghsa-venv-activate' is
+set, the tool is launched from `ghsa-shell' after sourcing that
+virtualenv; otherwise `ghsa-command' is invoked directly.  Signals
+a `user-error' when the activate script or the launcher cannot be
+found."
+  (let* ((ghsa-args (append ghsa-command args))
+         (activate (and ghsa-venv-activate
+                        (expand-file-name ghsa-venv-activate)))
+         (command
+          (if activate
+              ;; Source the virtualenv, then hand the process over to the
+              ;; tool so stdin/EOF and the exit status pass straight through.
+              (list ghsa-shell "-c"
+                    (format "source %s && exec %s"
+                            (shell-quote-argument activate)
+                            (mapconcat #'shell-quote-argument ghsa-args " ")))
+            ghsa-args)))
+    (when (and activate (not (file-exists-p activate)))
+      (user-error "Virtualenv activate script not found: %s" activate))
+    (unless (executable-find (car command))
+      (user-error "Cannot find launcher %S on PATH" (car command)))
+    command))
+
 (defun ghsa--article-text ()
   "Return the raw text of the currently selected Gnus article.
 Signals a `user-error' when Gnus is not running or no article is
 selected."
+  (require 'gnus)
+  (require 'gnus-sum)
+  (require 'gnus-art)
   (unless (gnus-alive-p)
     (user-error "Gnus is not running"))
   (cond
@@ -125,32 +154,15 @@ selected."
 With PREVIEW non-nil, pass --stdout so the advisory is printed to
 the output buffer instead of written to files."
   (let* ((default-directory (or ghsa-directory default-directory))
-         (ghsa-args (append ghsa-command
-                            (list "generate" "--email" "-")
+         (tool-args (append (list "generate" "--email" "-")
                             (when preview '("--stdout"))))
-         (activate (and ghsa-venv-activate
-                        (expand-file-name ghsa-venv-activate)))
-         (command
-          (if activate
-              ;; Source the virtualenv, then hand the process over to the
-              ;; tool so stdin/EOF and the exit status pass straight through.
-              (list ghsa-shell "-c"
-                    (format "source %s && exec %s"
-                            (shell-quote-argument activate)
-                            (mapconcat #'shell-quote-argument ghsa-args " ")))
-            ghsa-args))
+         (command (ghsa--command tool-args))
          (buf (get-buffer-create ghsa-output-buffer)))
-    (when (and activate (not (file-exists-p activate)))
-      (user-error "Virtualenv activate script not found: %s" activate))
-    (unless (executable-find (car command))
-      (user-error "Cannot find launcher %S on PATH" (car command)))
     (with-current-buffer buf
       (setq buffer-read-only nil)
       (erase-buffer)
       (insert (format "$ %s\n(cwd: %s)\n\n"
-                      (if activate
-                          (nth 2 command)
-                        (mapconcat #'identity ghsa-args " "))
+                      (mapconcat #'identity (append ghsa-command tool-args) " ")
                       default-directory)))
     (display-buffer buf)
     (let ((proc (make-process
