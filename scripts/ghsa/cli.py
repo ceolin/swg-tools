@@ -41,6 +41,7 @@ def cli() -> None:
     \b
     Typical workflow:
       ghsa sync                    # populate local DB from GitHub
+      ghsa sync-cloud              # refresh local DB from Turso cloud
       ghsa list                    # browse draft/triage advisories
       ghsa show GHSA-xxxx-xxxx-xxxx
       ghsa generate --email report.eml
@@ -195,6 +196,21 @@ def sync(db: str, repo: str) -> None:
     advisories = gh_mod.fetch_advisories(session, repo, list(db_mod.ALL_STATES))
     count = db_mod.sync_to_db(db, repo, advisories)
     click.echo(f'Synced {count} advisories from {repo} to {db}')
+
+
+@cli.command('sync-cloud')
+@click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
+              help='local libSQL/Turso database file')
+def sync_cloud(db: str) -> None:
+    '''Refresh the local database from the Turso cloud primary.
+
+    Pulls the latest advisories from Turso into the local replica. Writes are
+    already write-through to the cloud, so this only pulls. Requires
+    TURSO_DATABASE_URL (and, for private databases, TURSO_AUTH_TOKEN) in the
+    environment.
+    '''
+    db_mod.sync_cloud(db)
+    click.echo(f'Synced {db} with the Turso cloud')
 
 
 @cli.command('list')

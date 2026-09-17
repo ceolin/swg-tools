@@ -160,6 +160,25 @@ def turso_credentials() -> tuple[Optional[str], Optional[str]]:
             os.environ.get('TURSO_AUTH_TOKEN'))
 
 
+def sync_cloud(db_path: str) -> None:
+    '''Refresh the local libSQL replica from the Turso cloud primary.
+
+    Pulls the latest rows from the cloud into the local replica file. This is a
+    pull only: writes are already write-through to the primary at execute time,
+    so there is nothing to push. Requires TURSO_DATABASE_URL to be set; without
+    it there is no cloud to sync against.
+    '''
+    sync_url, auth_token = turso_credentials()
+    if not sync_url:
+        sys.exit('error: TURSO_DATABASE_URL is not set; nothing to sync with')
+    try:
+        import libsql
+    except ImportError:
+        sys.exit('error: the "libsql" package is required (uv add libsql)')
+    conn = libsql.connect(db_path, sync_url=sync_url, auth_token=auth_token)
+    conn.sync()
+
+
 def connect_db(db_path: str) -> Any:
     '''Open the local libSQL database, syncing from Turso if configured.'''
     try:
@@ -172,7 +191,11 @@ def connect_db(db_path: str) -> Any:
         conn = libsql.connect(db_path, sync_url=sync_url, auth_token=auth_token)
         conn.sync()
         return conn
-    return libsql.connect(db_path)
+    conn = libsql.connect(db_path)
+    # WAL lets readers and a writer proceed concurrently and survives crashes
+    # better than the default rollback journal.
+    conn.execute('PRAGMA journal_mode=WAL')
+    return conn
 
 
 def has_advisories_table(conn: Any) -> bool:
