@@ -8,9 +8,14 @@ to change it) this runs `ghsa sync` followed by `ghsa dashboard`, then
 swaps the new page in. A failed sync is logged and the dashboard is still
 rendered from what the database already holds. A failed render is retried
 every RETRY_MINUTES until it succeeds.
+
+POST /api/update-missing-fields runs `ghsa update GHSA --missing-fields`
+for the advisory named in the JSON body, then refreshes the dashboard.
 '''
 
+import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -27,7 +32,11 @@ SYNC = os.environ.get('SYNC', 'true').lower() in ('1', 'true', 'yes')
 REPO = os.environ.get('REPO')
 RETRY = timedelta(minutes=int(os.environ.get('RETRY_MINUTES', '5')))
 
+GHSA_RE = re.compile(r'GHSA(-[23456789cfghjmpqrvwx]{4}){3}')
+MAX_BODY = 4096
+
 last_error: str = ''
+refresh = threading.Event()
 
 
 def log(msg: str) -> None:
@@ -56,12 +65,15 @@ def next_run(times: list[tuple[int, int]], now: datetime) -> datetime:
     raise AssertionError('unreachable')
 
 
-def ghsa(*args: str) -> bool:
+def ghsa(*args: str, capture: bool = False,
+         timeout: float | None = None) -> subprocess.CompletedProcess:
     repo = ['--repo', REPO] if REPO else []
-    result = subprocess.run([sys.executable, '-m', 'ghsa', *args, *repo])
+    result = subprocess.run([sys.executable, '-m', 'ghsa', *args, *repo],
+                            capture_output=capture, text=True,
+                            timeout=timeout)
     if result.returncode:
         log(f'ghsa {args[0]} failed with exit status {result.returncode}')
-    return result.returncode == 0
+    return result
 
 
 def update() -> bool:
@@ -71,7 +83,7 @@ def update() -> bool:
         ghsa('sync')
     log('rendering dashboard')
     tmp = PAGE + '.tmp'
-    if not ghsa('dashboard', '--output', tmp):
+    if ghsa('dashboard', '--output', tmp).returncode:
         last_error = f'last update failed at {datetime.now():%Y-%m-%d %H:%M}'
         return False
     os.replace(tmp, PAGE)
@@ -87,7 +99,9 @@ def scheduler(times: list[tuple[int, int]]) -> None:
         if not ok:
             when = min(when, datetime.now() + RETRY)
         log(f'next update at {when:%Y-%m-%d %H:%M}')
-        time.sleep(max(0, (when - datetime.now()).total_seconds()))
+        if refresh.wait(max(0, (when - datetime.now()).total_seconds())):
+            log('refresh requested')
+        refresh.clear()
         ok = update()
 
 
@@ -97,6 +111,51 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         self._serve(body=False)
+
+    def do_POST(self) -> None:
+        if self.path.split('?', 1)[0] != '/api/update-missing-fields':
+            self._json(HTTPStatus.NOT_FOUND, False, 'not found')
+            return
+        # The custom header makes browsers send a CORS preflight, which this
+        # server never approves, so other sites cannot trigger an update.
+        if self.headers.get('X-Requested-With') != 'ghsa-dashboard':
+            self._json(HTTPStatus.FORBIDDEN, False, 'missing request header')
+            return
+        origin = self.headers.get('Origin')
+        if origin and origin != f'http://{self.headers.get("Host")}':
+            self._json(HTTPStatus.FORBIDDEN, False, 'cross-origin request')
+            return
+        try:
+            length = int(self.headers.get('Content-Length') or 0)
+            if length > MAX_BODY:
+                raise ValueError('request too large')
+            ghsa_id = json.loads(self.rfile.read(length)).get('ghsa', '')
+        except (ValueError, AttributeError) as exc:
+            self._json(HTTPStatus.BAD_REQUEST, False, f'bad request: {exc}')
+            return
+        if not isinstance(ghsa_id, str) or not GHSA_RE.fullmatch(ghsa_id):
+            self._json(HTTPStatus.BAD_REQUEST, False, 'invalid GHSA id')
+            return
+
+        log(f'{self.address_string()} updating missing fields of {ghsa_id}')
+        try:
+            result = ghsa('update', ghsa_id, '--missing-fields',
+                          capture=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            self._json(HTTPStatus.GATEWAY_TIMEOUT, False,
+                       'ghsa update timed out')
+            return
+        output = (result.stdout + result.stderr).strip()
+        log(output)
+        if result.returncode:
+            self._json(HTTPStatus.BAD_GATEWAY, False, output)
+            return
+        refresh.set()
+        self._json(HTTPStatus.OK, True, output)
+
+    def _json(self, status: HTTPStatus, ok: bool, output: str) -> None:
+        self._send(status, json.dumps({'ok': ok, 'output': output}).encode(),
+                   'application/json', True)
 
     def _serve(self, body: bool) -> None:
         path = self.path.split('?', 1)[0]

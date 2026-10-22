@@ -150,6 +150,11 @@ The table's `Analysis` column links to the notes stored by
 `update --analysis`; the link opens them in a new tab. The notes are
 embedded in the HTML file, so the page stays self-contained.
 
+The `Missing` column lists the fields `update --missing-fields` would
+add. Next to them, a button copies that command when the page is opened
+from disk; on the served dashboard (see
+[Serving the dashboard](#serving-the-dashboard)) it runs the update.
+
 ```sh
 uv run scripts/ghsa dashboard --open
 uv run scripts/ghsa dashboard -o report.html
@@ -224,6 +229,10 @@ The page is at `http://<host>:8080/`. `UPDATE_TIMES` and `TZ` in
 change where it listens. The compose file mounts `../mysql/certs/ca.pem`,
 so run it on the database host or copy the CA there.
 
-The dashboard lists embargoed advisories and has no authentication.
-Expose it only on a private network, for example with
-`DASHBOARD_BIND=<tailscale-ip>`.
+The `Update` button in the `Missing` column runs
+`ghsa update <GHSA> --missing-fields` in the container and refreshes the
+page, so `SWG_GITHUB_TOKEN` needs write access to security advisories.
+
+The dashboard lists embargoed advisories and has no authentication, and
+anyone who can reach it can use the `Update` button. Expose it only on a
+private network, for example with `DASHBOARD_BIND=<tailscale-ip>`.

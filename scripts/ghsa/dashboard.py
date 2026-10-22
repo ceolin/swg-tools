@@ -301,6 +301,7 @@ def _table_records(advisories: list[dict[str, Any]]) -> list[dict[str, Any]]:
             'url': a.get('html_url') or '',
             'analysis': a.get('analysis') or '',
             'analysis_at': a.get('analysis_updated_at') or '',
+            'missing': db_mod.missing_fields(a.get('description')),
         })
     return records
 
@@ -514,6 +515,7 @@ tbody td {{ padding: 7px 10px; border-bottom: 1px solid var(--grid);
 tbody td.num {{ font-variant-numeric: tabular-nums; }}
 thead th:nth-child(2), tbody td:nth-child(2) {{ min-width: 150px; white-space: nowrap; }}
 thead th:nth-child(6), tbody td:nth-child(6) {{ min-width: 116px; white-space: nowrap; }}
+thead th:nth-child(8), tbody td:nth-child(8) {{ min-width: 220px; }}
 tbody tr:hover {{ background: color-mix(in srgb, var(--series-1) 6%, transparent); }}
 a {{ color: var(--series-1); text-decoration: none; }}
 a:hover {{ text-decoration: underline; }}
@@ -522,6 +524,17 @@ a:hover {{ text-decoration: underline; }}
 .sev-chip .dot {{ width: 9px; height: 9px; border-radius: 50%; }}
 .count {{ color: var(--muted); margin-left: 8px; font-size: 12px; }}
 .table-wrap {{ overflow-x: auto; }}
+.missing {{ display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }}
+.missing .tag {{ font-size: 12px; color: var(--ink-2); white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 6px; padding: 0 6px; }}
+.fix {{
+  border: 1px solid var(--series-1); background: transparent;
+  color: var(--series-1); border-radius: 6px; padding: 1px 8px;
+  font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+}}
+.fix:hover:not(:disabled) {{ background: color-mix(in srgb, var(--series-1) 12%, transparent); }}
+.fix:disabled {{ opacity: .6; cursor: default; }}
+.fix-note {{ font-size: 12px; color: var(--muted); }}
 </style>
 </head>
 <body>
@@ -556,6 +569,7 @@ a:hover {{ text-decoration: underline; }}
           <th data-k="cvss">CVSS <span class="arrow"></span></th>
           <th data-k="embargo">Embargo <span class="arrow"></span></th>
           <th data-k="analysis_at">Analysis <span class="arrow"></span></th>
+          <th data-k="missing">Missing <span class="arrow"></span></th>
           <th data-k="summary">Summary <span class="arrow"></span></th>
         </tr></thead>
         <tbody id="rows"></tbody>
@@ -606,7 +620,65 @@ function openAnalysis(r) {{
     + esc(r.analysis) + "</pre></body></html>");
   w.document.close();
 }}
+// Rows whose fix was sent this session, so a re-render keeps the status.
+const fixStatus = {{}};
+function updateCommand(ghsa) {{
+  return "ghsa update " + ghsa + " --missing-fields";
+}}
+function missingCell(r) {{
+  if (!r.missing.length) return "—";
+  const tags = r.missing.map(m => '<span class="tag">' + esc(m) + "</span>")
+    .join("");
+  const status = fixStatus[r.ghsa];
+  const action = status
+    ? '<span class="fix-note">' + esc(status) + "</span>"
+    : '<button type="button" class="fix" data-ghsa="' + esc(r.ghsa)
+      + '" title="' + esc(updateCommand(r.ghsa)) + '">'
+      + (location.protocol === "file:" ? "Copy command" : "Update")
+      + "</button>";
+  return '<div class="missing">' + tags + action + "</div>";
+}}
+// Served by deploy/dashboard/serve.py the button runs the update there;
+// opened from disk there is no server, so it copies the command instead.
+async function fixMissing(btn) {{
+  const ghsa = btn.dataset.ghsa;
+  const cmd = updateCommand(ghsa);
+  if (location.protocol === "file:") {{
+    try {{
+      await navigator.clipboard.writeText(cmd);
+      btn.textContent = "Copied";
+    }} catch (e) {{
+      window.prompt("Run this command:", cmd);
+    }}
+    return;
+  }}
+  if (!confirm("Add the missing fields to " + ghsa + " on GitHub?\\n\\n" + cmd))
+    return;
+  btn.disabled = true;
+  btn.textContent = "Updating…";
+  try {{
+    const resp = await fetch("api/update-missing-fields", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json",
+                 "X-Requested-With": "ghsa-dashboard"}},
+      body: JSON.stringify({{ghsa}}),
+    }});
+    const res = await resp.json().catch(() => ({{}}));
+    if (!resp.ok || !res.ok) throw new Error(res.output || resp.statusText);
+    fixStatus[ghsa] = "updated, refreshing";
+    render();
+  }} catch (e) {{
+    btn.disabled = false;
+    btn.textContent = "Update";
+    alert("Updating " + ghsa + " failed:\\n\\n" + e.message);
+  }}
+}}
 rowsEl.addEventListener("click", ev => {{
+  const btn = ev.target.closest("button.fix");
+  if (btn) {{
+    fixMissing(btn);
+    return;
+  }}
   const a = ev.target.closest("a.analysis");
   if (!a) return;
   ev.preventDefault();
@@ -615,6 +687,7 @@ rowsEl.addEventListener("click", ev => {{
 function cmp(a, b, k) {{
   if (k === "severity") return SEV_RANK[a.severity] - SEV_RANK[b.severity];
   if (k === "cvss") return (a.cvss ?? -1) - (b.cvss ?? -1);
+  if (k === "missing") return a.missing.length - b.missing.length;
   return String(a[k]).localeCompare(String(b[k]));
 }}
 function render() {{
@@ -639,6 +712,7 @@ function render() {{
       + '<td class="num">' + (r.cvss ?? "—") + "</td>"
       + '<td class="num">' + esc(r.embargo || "—") + "</td>"
       + "<td>" + analysisLink(r) + "</td>"
+      + "<td>" + missingCell(r) + "</td>"
       + "<td>" + esc(r.summary) + "</td>"
       + "</tr>";
   }}).join("");
@@ -652,7 +726,8 @@ document.querySelectorAll("th[data-k]").forEach(th => {{
   th.addEventListener("click", () => {{
     const k = th.dataset.k;
     if (sort.k === k) sort.dir *= -1;
-    else sort = {{k, dir: k === "cvss" || k === "severity" ? -1 : 1}};
+    else sort = {{k, dir: k === "cvss" || k === "severity" || k === "missing"
+                           ? -1 : 1}};
     render();
   }});
 }});
