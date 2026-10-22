@@ -8,3 +8,8 @@ __pycache__/
 /advisories/
 advisories-dashboard.html
 *-dashboard.html
+
+# MySQL deployment secrets and data
+/deploy/mysql/secrets/
+/deploy/mysql/certs/
+/deploy/mysql/backups/

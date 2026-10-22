@@ -174,3 +174,32 @@ against the system CAs, or `?ssl_ca=/path/to/ca.pem` to use a specific CA.
 
 `sync` creates the tables on first run. The database user needs
 `SELECT`, `INSERT`, `UPDATE`, `CREATE` and `ALTER` on that database.
+
+### Hosting the database
+
+`deploy/mysql/` runs MySQL 8.4 in Docker with TLS required and a `ghsa`
+account limited to the grants above. On the server:
+
+```sh
+cd deploy/mysql
+./setup.sh db.example.org 203.0.113.10   # hostname, plus any other names/IPs
+docker compose up -d
+```
+
+`setup.sh` generates random passwords in `secrets/` and a private CA plus
+server certificate in `certs/`, then prints the `GHSA_DATABASE_URL` to
+use. Clients must connect with one of the names given to `setup.sh` and
+need a copy of `certs/ca.pem` for `?ssl_ca=`. Keep `certs/ca-key.pem` and
+`secrets/` on the server only. Set `MYSQL_PORT` or `MYSQL_BIND` to change
+the published port or listen address.
+
+Restrict port 3306 to the team's addresses with the firewall, or keep it
+off the internet and reach it over a VPN.
+
+`backup.sh` writes a compressed dump to `backups/` and keeps 30 days
+(`KEEP_DAYS`). Run it from cron and copy the dumps off the machine: the
+analysis notes exist only in this database.
+
+```sh
+15 3 * * * /path/to/swg-tools/deploy/mysql/backup.sh
+```
