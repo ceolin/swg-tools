@@ -16,7 +16,7 @@ DEFAULT_REPO = 'zephyrproject-rtos/zephyr'
 # ─── Authentication ───────────────────────────────────────────────────────────
 
 def get_token() -> Optional[str]:
-    token = os.environ.get('GITHUB_TOKEN')
+    token = os.environ.get('SWG_GITHUB_TOKEN')
     if token:
         return token
     try:
@@ -31,7 +31,7 @@ def github_session() -> requests.Session:
     token = get_token()
     if not token:
         sys.exit('error: a GitHub token is required '
-                 '(set GITHUB_TOKEN or configure ~/.netrc)')
+                 '(set SWG_GITHUB_TOKEN or configure ~/.netrc)')
     session = requests.Session()
     session.headers.update({
         'Accept': 'application/vnd.github+json',

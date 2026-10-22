@@ -20,7 +20,7 @@ Run from the repository root:
 python3 scripts/ghsa show --json <GHSA-id>
 ```
 
-If the command exits with "advisory not found", tell the user to run `python3 scripts/ghsa sync` first to populate the local database (requires `GITHUB_TOKEN` or `~/.netrc`). Do not invent data.
+If the command exits with "advisory not found", tell the user to run `python3 scripts/ghsa sync` first to populate the local database (requires `SWG_GITHUB_TOKEN` or `~/.netrc`). Do not invent data.
 
 Step 2 — Ground the analysis in the code:
 

@@ -35,7 +35,7 @@ Run from the repository root:
 
 If the command exits with "advisory not found", tell the user to run
 `.venv/bin/python3 scripts/ghsa sync` first to populate the local database
-(requires `GITHUB_TOKEN` or `~/.netrc`). Do not invent data.
+(requires `SWG_GITHUB_TOKEN` or `~/.netrc`). Do not invent data.
 
 From the JSON, note these fields — they are needed later:
 - `summary` and `description` (used to find affected files in Step 2).
@@ -85,7 +85,7 @@ Rules:
 
 `scripts/update_collaborators.py` PATCHes the advisory on GitHub from the JSON
 file. It forwards only the `collaborating_teams`/`collaborating_users` fields and
-needs a token with write access to security advisories (`GITHUB_TOKEN` or
+needs a token with write access to security advisories (`SWG_GITHUB_TOKEN` or
 `~/.netrc`). Dry-run first:
 
 ```

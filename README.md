@@ -36,7 +36,7 @@ stored in the repository.
 
 | Variable | Used by | Purpose |
 | --- | --- | --- |
-| `GITHUB_TOKEN` (or `~/.netrc` for `github.com`) | `sync`, `create`, `update` | GitHub API access |
+| `SWG_GITHUB_TOKEN` (or `~/.netrc` for `github.com`) | `sync`, `create`, `update` | GitHub API access |
 | `OPENROUTER_API_KEY` | `generate` | OpenRouter LLM access |
 | `GHSA_DATABASE_URL` | `sync`, `list`, `show`, `update --analysis`, `dashboard` | shared MySQL database |
 | `ZEPHYR_BASE` | `generate` | Zephyr checkout, for maintainer lookup |
