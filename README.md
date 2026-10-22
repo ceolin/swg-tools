@@ -38,13 +38,13 @@ stored in the repository.
 | --- | --- | --- |
 | `GITHUB_TOKEN` (or `~/.netrc` for `github.com`) | `sync`, `create`, `update` | GitHub API access |
 | `OPENROUTER_API_KEY` | `generate` | OpenRouter LLM access |
-| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | `sync`, `list`, `show`, `dashboard` | optional remote Turso replica |
+| `GHSA_DATABASE_URL` | `sync`, `list`, `show`, `update --analysis`, `dashboard` | shared MySQL database |
 | `ZEPHYR_BASE` | `generate` | Zephyr checkout, for maintainer lookup |
 
 ## Commands
 
-The tool reads from a local libSQL/Turso database (default
-`advisories.db`); only `sync`, `create`, and `update` contact GitHub. Run `sync`
+The tool reads from a shared MySQL database (see
+[Database](#database)); only `sync`, `create`, and `update` contact GitHub. Run `sync`
 first to populate the database.
 
 ### `sync` — refresh the local database from GitHub
@@ -157,16 +157,20 @@ uv run scripts/ghsa dashboard -o report.html
 See `uv run scripts/ghsa <command> --help` for the full option list of
 any command.
 
-## Syncing to a remote Turso database
+## Database
 
-The database is a local libSQL file (`--db`, default `advisories.db`).
-If `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are set, the file is
-opened as an embedded [Turso](https://turso.tech) replica: reads pull
-the latest data from the remote database, and `sync` pushes changes back
-to it.
+Advisories live in a central MySQL (or MariaDB) database so everyone on
+the team works from the same data. Point the tool at it with a URL, either
+in `GHSA_DATABASE_URL` or with `--db`:
 
 ```sh
-export TURSO_DATABASE_URL=libsql://<your-db>.turso.io
-export TURSO_AUTH_TOKEN=<your-token>
+export GHSA_DATABASE_URL='mysql://<user>:<password>@<host>[:port]/<database>'
 uv run scripts/ghsa sync
 ```
+
+Percent-encode special characters in the password (`@` is `%40`, `:` is
+`%3A`). Append `?ssl=true` to require TLS with certificate verification
+against the system CAs, or `?ssl_ca=/path/to/ca.pem` to use a specific CA.
+
+`sync` creates the tables on first run. The database user needs
+`SELECT`, `INSERT`, `UPDATE`, `CREATE` and `ALTER` on that database.

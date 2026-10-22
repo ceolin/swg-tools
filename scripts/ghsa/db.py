@@ -1,11 +1,11 @@
 # Copyright (c) 2026 Flavio Ceolin <flavio.ceolin@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-'''Database operations for the local advisory store (libSQL / Turso).'''
+'''Database operations for the shared advisory store (MySQL).'''
 
 import json
-import os
 import re
 import sys
+from urllib.parse import parse_qs, unquote, urlsplit
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
@@ -16,72 +16,66 @@ PATCHES_RE = re.compile(r'(?ims)^#{1,6}\s*Patches\s*$\s*(.*?)(?=^#{1,6}\s|\Z)')
 
 _CREATE_TABLE = '''\
 CREATE TABLE IF NOT EXISTS advisories (
-    ghsa_id      TEXT PRIMARY KEY,
-    repo         TEXT,
-    cve_id       TEXT,
+    ghsa_id      VARCHAR(64) NOT NULL PRIMARY KEY,
+    repo         VARCHAR(255),
+    cve_id       VARCHAR(32),
     summary      TEXT,
-    severity     TEXT,
-    state        TEXT,
-    cvss_score   REAL,
-    cvss_vector  TEXT,
+    severity     VARCHAR(16),
+    state        VARCHAR(16),
+    cvss_score   DOUBLE,
+    cvss_vector  VARCHAR(255),
     cwes         TEXT,
     fixes        TEXT,
-    html_url     TEXT,
-    created_at   TEXT,
-    published_at TEXT,
-    updated_at   TEXT,
-    embargo      TEXT,
-    analysis     TEXT,
-    analysis_updated_at TEXT,
-    raw          TEXT NOT NULL,
-    synced_at    TEXT NOT NULL
-)'''
+    html_url     VARCHAR(512),
+    created_at   VARCHAR(40),
+    published_at VARCHAR(40),
+    updated_at   VARCHAR(40),
+    embargo      VARCHAR(10),
+    analysis     LONGTEXT,
+    analysis_updated_at VARCHAR(40),
+    raw          LONGTEXT NOT NULL,
+    synced_at    VARCHAR(40) NOT NULL,
+    INDEX idx_advisories_repo (repo)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin'''
 
 # Columns added after the initial schema; applied to existing databases by
 # ensure_schema().
 _EXTRA_COLUMNS = (
-    ('analysis', 'TEXT'),
-    ('analysis_updated_at', 'TEXT'),
+    ('analysis', 'LONGTEXT'),
+    ('analysis_updated_at', 'VARCHAR(40)'),
 )
 
 _CREATE_SYNC_METADATA_TABLE = '''\
 CREATE TABLE IF NOT EXISTS sync_metadata (
-    name      TEXT PRIMARY KEY,
-    synced_at TEXT NOT NULL
-)'''
+    name      VARCHAR(64) NOT NULL PRIMARY KEY,
+    synced_at VARCHAR(40) NOT NULL
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin'''
 
-_UPSERT = '''\
-INSERT INTO advisories (
-    ghsa_id, repo, cve_id, summary, severity, state, cvss_score,
-    cvss_vector, cwes, fixes, html_url, created_at, published_at,
-    updated_at, embargo, raw, synced_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(ghsa_id) DO UPDATE SET
-    repo         = excluded.repo,
-    cve_id       = excluded.cve_id,
-    summary      = excluded.summary,
-    severity     = excluded.severity,
-    state        = excluded.state,
-    cvss_score   = excluded.cvss_score,
-    cvss_vector  = excluded.cvss_vector,
-    cwes         = excluded.cwes,
-    fixes        = excluded.fixes,
-    html_url     = excluded.html_url,
-    created_at   = excluded.created_at,
-    published_at = excluded.published_at,
-    updated_at   = excluded.updated_at,
-    embargo      = excluded.embargo,
-    raw          = excluded.raw,
-    synced_at    = excluded.synced_at
-WHERE excluded.updated_at IS NOT NULL
-  AND (advisories.updated_at IS NULL
-       OR excluded.updated_at > advisories.updated_at)'''
+_UPSERT_COLUMNS = (
+    'ghsa_id', 'repo', 'cve_id', 'summary', 'severity', 'state', 'cvss_score',
+    'cvss_vector', 'cwes', 'fixes', 'html_url', 'created_at', 'published_at',
+    'updated_at', 'embargo', 'raw', 'synced_at',
+)
+
+# Only overwrite a row when GitHub reports a newer updated_at. MySQL applies
+# the assignments left to right, so updated_at must be assigned last: the
+# condition reads the stored value and would see the new one otherwise.
+_NEWER = ('VALUES(updated_at) IS NOT NULL AND (updated_at IS NULL '
+          'OR VALUES(updated_at) > updated_at)')
+_UPSERT = (
+    'INSERT INTO advisories (' + ', '.join(_UPSERT_COLUMNS) + ') VALUES ('
+    + ', '.join('%s' for _ in _UPSERT_COLUMNS) + ')\n'
+    'ON DUPLICATE KEY UPDATE\n    '
+    + ',\n    '.join(
+        f'{col} = IF({_NEWER}, VALUES({col}), {col})'
+        for col in [c for c in _UPSERT_COLUMNS if c not in
+                    ('ghsa_id', 'updated_at')] + ['updated_at']))
 
 _UPSERT_GLOBAL_SYNCED_AT = '''\
 INSERT INTO sync_metadata (name, synced_at)
-VALUES ('global', ?)
-ON CONFLICT(name) DO UPDATE SET
-    synced_at = excluded.synced_at'''
+VALUES ('global', %s)
+ON DUPLICATE KEY UPDATE
+    synced_at = VALUES(synced_at)'''
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -155,135 +149,154 @@ def _advisory_row(a: dict[str, Any], repo: str,
 
 # ─── Connection ──────────────────────────────────────────────────────────────
 
-def turso_credentials() -> tuple[Optional[str], Optional[str]]:
-    return (os.environ.get('TURSO_DATABASE_URL'),
-            os.environ.get('TURSO_AUTH_TOKEN'))
+DATABASE_URL_ENV = 'GHSA_DATABASE_URL'
 
 
-def sync_cloud(db_path: str) -> None:
-    '''Refresh the local libSQL replica from the Turso cloud primary.
+def redact_url(db_url: str) -> str:
+    '''Return the database URL with the password masked, for messages.'''
+    parts = urlsplit(db_url)
+    if parts.password is None:
+        return db_url
+    netloc = parts.netloc.replace(f':{parts.password}@', ':***@', 1)
+    return parts._replace(netloc=netloc).geturl()
 
-    Pulls the latest rows from the cloud into the local replica file. This is a
-    pull only: writes are already write-through to the primary at execute time,
-    so there is nothing to push. Requires TURSO_DATABASE_URL to be set; without
-    it there is no cloud to sync against.
-    '''
-    sync_url, auth_token = turso_credentials()
-    if not sync_url:
-        sys.exit('error: TURSO_DATABASE_URL is not set; nothing to sync with')
+
+def _connect_args(db_url: str) -> dict[str, Any]:
+    '''Translate mysql://user:pass@host:port/dbname?ssl=true into PyMySQL
+    connect() keyword arguments.'''
+    parts = urlsplit(db_url)
+    if parts.scheme not in ('mysql', 'mysql+pymysql'):
+        sys.exit(f'error: unsupported database URL {redact_url(db_url)}; '
+                 'expected mysql://user:password@host[:port]/database')
+    database = parts.path.lstrip('/')
+    if not parts.hostname or not database:
+        sys.exit(f'error: database URL {redact_url(db_url)} must name a host '
+                 'and a database')
+    args: dict[str, Any] = {
+        'host': parts.hostname,
+        'port': parts.port or 3306,
+        'user': unquote(parts.username or ''),
+        'password': unquote(parts.password or ''),
+        'database': database,
+        'charset': 'utf8mb4',
+    }
+    query = {k: v[-1] for k, v in parse_qs(parts.query).items()}
+    if query.get('ssl_ca'):
+        args['ssl_ca'] = query['ssl_ca']
+    if query.get('ssl', '').lower() in ('1', 'true', 'yes') or 'ssl_ca' in args:
+        args['ssl_verify_cert'] = True
+        args['ssl_verify_identity'] = True
+    return args
+
+
+def connect_db(db_url: Optional[str]) -> Any:
+    '''Open a connection to the shared MySQL database.'''
+    if not db_url:
+        sys.exit(f'error: no database configured; set {DATABASE_URL_ENV} or '
+                 'pass --db mysql://user:password@host/database')
     try:
-        import libsql
+        import pymysql
     except ImportError:
-        sys.exit('error: the "libsql" package is required (uv add libsql)')
-    conn = libsql.connect(db_path, sync_url=sync_url, auth_token=auth_token)
-    conn.sync()
-
-
-def connect_db(db_path: str) -> Any:
-    '''Open the local libSQL database, syncing from Turso if configured.'''
+        sys.exit('error: the "pymysql" package is required (uv add pymysql)')
     try:
-        import libsql
-    except ImportError:
-        sys.exit('error: the "libsql" package is required (uv add libsql)')
+        return pymysql.connect(**_connect_args(db_url))
+    except pymysql.Error as exc:
+        sys.exit(f'error: cannot connect to {redact_url(db_url)}: {exc}')
 
-    sync_url, auth_token = turso_credentials()
-    if sync_url:
-        conn = libsql.connect(db_path, sync_url=sync_url, auth_token=auth_token)
-        conn.sync()
-        return conn
-    conn = libsql.connect(db_path)
-    # WAL lets readers and a writer proceed concurrently and survives crashes
-    # better than the default rollback journal.
-    conn.execute('PRAGMA journal_mode=WAL')
-    return conn
+
+def _execute(conn: Any, sql: str, params: Any = None) -> Any:
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    return cur
+
+
+def _has_table(conn: Any, name: str) -> bool:
+    row = _execute(
+        conn,
+        'SELECT 1 FROM information_schema.tables '
+        'WHERE table_schema = DATABASE() AND table_name = %s', (name,)
+    ).fetchone()
+    return row is not None
 
 
 def has_advisories_table(conn: Any) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='advisories'"
-    ).fetchone()
-    return row is not None
+    return _has_table(conn, 'advisories')
 
 
 def has_sync_metadata_table(conn: Any) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_metadata'"
-    ).fetchone()
-    return row is not None
+    return _has_table(conn, 'sync_metadata')
+
+
+def _columns(conn: Any) -> set[str]:
+    return {row[0] for row in _execute(
+        conn,
+        'SELECT column_name FROM information_schema.columns '
+        "WHERE table_schema = DATABASE() AND table_name = 'advisories'"
+    ).fetchall()}
 
 
 def ensure_schema(conn: Any) -> None:
     '''Add columns introduced after a database was first created.'''
     if not has_advisories_table(conn):
         return
-    existing = {row[1] for row in
-                conn.execute('PRAGMA table_info(advisories)').fetchall()}
+    existing = _columns(conn)
     for name, decl in _EXTRA_COLUMNS:
         if name not in existing:
-            conn.execute(f'ALTER TABLE advisories ADD COLUMN {name} {decl}')
+            _execute(conn, f'ALTER TABLE advisories ADD COLUMN {name} {decl}')
             conn.commit()
 
 
 # ─── Write ───────────────────────────────────────────────────────────────────
 
-def sync_to_db(db_path: str, repo: str,
+def sync_to_db(db_url: Optional[str], repo: str,
                advisories: list[dict[str, Any]]) -> int:
-    '''Upsert advisories into the local database, then push to Turso.'''
-    conn = connect_db(db_path)
-    conn.execute(_CREATE_TABLE)
-    conn.execute(_CREATE_SYNC_METADATA_TABLE)
+    '''Upsert advisories into the database.'''
+    conn = connect_db(db_url)
+    _execute(conn, _CREATE_TABLE)
+    _execute(conn, _CREATE_SYNC_METADATA_TABLE)
     ensure_schema(conn)
     synced_at = datetime.now().astimezone().isoformat()
     count = 0
     for a in advisories:
         if not a.get('ghsa_id'):
             continue
-        conn.execute(_UPSERT, _advisory_row(a, repo, synced_at))
-        row = conn.execute('SELECT changes()').fetchone()
-        changes = int(row[0] or 0)
-        count += changes
+        # Affected rows: 1 for an insert, 2 for an update, 0 when unchanged.
+        if _execute(conn, _UPSERT, _advisory_row(a, repo, synced_at)).rowcount:
+            count += 1
     if count:
-        conn.execute(_UPSERT_GLOBAL_SYNCED_AT, (synced_at,))
+        _execute(conn, _UPSERT_GLOBAL_SYNCED_AT, (synced_at,))
     conn.commit()
-    if turso_credentials()[0]:
-        conn.sync()
     return count
 
 
-def set_analysis(db_path: str, ghsa_id: str,
+def set_analysis(db_url: Optional[str], ghsa_id: str,
                  analysis: Optional[str]) -> Optional[str]:
-    '''Store the triage/analysis text of an advisory, then push to Turso.
+    '''Store the triage/analysis text of an advisory.
 
     Returns the timestamp recorded alongside it (None when clearing).
     '''
-    conn = connect_db(db_path)
+    conn = connect_db(db_url)
     if not has_advisories_table(conn):
-        sys.exit(f'error: no advisories in {db_path}; run `ghsa sync` first')
+        sys.exit('error: no advisories in the database; run `ghsa sync` first')
     ensure_schema(conn)
+    if _execute(conn, 'SELECT 1 FROM advisories WHERE ghsa_id = %s',
+                (ghsa_id,)).fetchone() is None:
+        sys.exit(f'error: advisory {ghsa_id} not found in the database')
     updated_at = datetime.now().astimezone().isoformat() if analysis else None
-    conn.execute(
-        'UPDATE advisories SET analysis = ?, analysis_updated_at = ? '
-        'WHERE ghsa_id = ?', (analysis, updated_at, ghsa_id))
-    row = conn.execute('SELECT changes()').fetchone()
-    if not int(row[0] or 0):
-        sys.exit(f'error: advisory {ghsa_id} not found in the local database')
+    _execute(conn,
+             'UPDATE advisories SET analysis = %s, analysis_updated_at = %s '
+             'WHERE ghsa_id = %s', (analysis, updated_at, ghsa_id))
     conn.commit()
-    if turso_credentials()[0]:
-        conn.sync()
     return updated_at
 
 
 # ─── Read ────────────────────────────────────────────────────────────────────
 
-def has_column(conn: Any, name: str) -> bool:
-    return any(row[1] == name for row in
-               conn.execute('PRAGMA table_info(advisories)').fetchall())
-
-
 def _select_columns(conn: Any) -> tuple[str, list[str]]:
     '''Build the select list for reads: raw, embargo, plus any extra column
     already present in this database.'''
-    extra = [name for name, _ in _EXTRA_COLUMNS if has_column(conn, name)]
+    existing = _columns(conn)
+    extra = [name for name, _ in _EXTRA_COLUMNS if name in existing]
     return ', '.join(['raw', 'embargo'] + extra), extra
 
 
@@ -302,40 +315,42 @@ def query_advisories(conn: Any, repo: str, states: list[str],
                      severity: Optional[str],
                      past_embargo: bool,
                      synced_since_global: bool = False) -> list[dict[str, Any]]:
-    clauses = ['repo = ?']
+    clauses = ['repo = %s']
     params: list[Any] = [repo]
     if synced_since_global:
         if not has_sync_metadata_table(conn):
             return []
-        row = conn.execute(
-            'SELECT synced_at FROM sync_metadata WHERE name = ?', ('global',)
+        row = _execute(
+            conn, 'SELECT synced_at FROM sync_metadata WHERE name = %s',
+            ('global',)
         ).fetchone()
         if row is None:
             return []
-        clauses.append('synced_at >= ?')
+        clauses.append('synced_at >= %s')
         params.append(row[0])
     if states:
-        placeholders = ', '.join('?' for _ in states)
+        placeholders = ', '.join('%s' for _ in states)
         clauses.append(f'state IN ({placeholders})')
         params.extend(states)
     if severity:
-        clauses.append('severity = ?')
+        clauses.append('severity = %s')
         params.append(severity.lower())
     if past_embargo:
-        clauses.append('embargo IS NOT NULL AND embargo < ?')
+        clauses.append('embargo IS NOT NULL AND embargo < %s')
         params.append(date.today().isoformat())
     columns, extra = _select_columns(conn)
     sql = (f'SELECT {columns} FROM advisories WHERE ' + ' AND '.join(clauses)
            + ' ORDER BY created_at DESC')
-    rows = conn.execute(sql, params).fetchall()
+    rows = _execute(conn, sql, params).fetchall()
     return [_hydrate(row, extra) for row in rows]
 
 
 def get_advisory(conn: Any, ghsa_id: str) -> dict[str, Any]:
     columns, extra = _select_columns(conn)
-    row = conn.execute(
-        f'SELECT {columns} FROM advisories WHERE ghsa_id = ?', (ghsa_id,)
+    row = _execute(
+        conn, f'SELECT {columns} FROM advisories WHERE ghsa_id = %s',
+        (ghsa_id,)
     ).fetchone()
     if row is None:
-        sys.exit(f'error: advisory {ghsa_id} not found in the local database')
+        sys.exit(f'error: advisory {ghsa_id} not found in the database')
     return _hydrate(row, extra)

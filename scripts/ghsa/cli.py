@@ -18,7 +18,6 @@ from . import generate as gen_mod
 from . import github as gh_mod
 from . import maintainers as maint_mod
 
-_DEFAULT_DB = 'advisories.db'
 
 _MISSING_PATCHES_SECTION = '''\
 <!-- zepsec:patch -->
@@ -40,8 +39,7 @@ def cli() -> None:
 
     \b
     Typical workflow:
-      ghsa sync                    # populate local DB from GitHub
-      ghsa sync-cloud              # refresh local DB from Turso cloud
+      ghsa sync                    # populate the database from GitHub
       ghsa list                    # browse draft/triage advisories
       ghsa show GHSA-xxxx-xxxx-xxxx
       ghsa generate --email report.eml
@@ -135,17 +133,24 @@ def _print_table(advisories: list[dict[str, Any]]) -> None:
 
 # ─── Guard helpers ────────────────────────────────────────────────────────────
 
-def _require_db(db_path: str) -> None:
-    sync_url, _ = db_mod.turso_credentials()
-    if not sync_url and not os.path.exists(db_path):
+def _db_option(text: str = 'MySQL database URL') -> Any:
+    return click.option(
+        '--db', envvar=db_mod.DATABASE_URL_ENV, metavar='URL',
+        help=f'{text} (mysql://user:password@host[:port]/database); '
+             f'defaults to ${db_mod.DATABASE_URL_ENV}')
+
+
+def _require_db(db_url: Optional[str]) -> None:
+    if not db_url:
         raise click.ClickException(
-            f'no advisory database at {db_path}; run `ghsa sync` first')
+            f'no database configured; set {db_mod.DATABASE_URL_ENV} or '
+            'pass --db')
 
 
-def _require_table(conn: Any, db_path: str) -> None:
+def _require_table(conn: Any) -> None:
     if not db_mod.has_advisories_table(conn):
         raise click.ClickException(
-            f'no advisories in {db_path}; run `ghsa sync` first')
+            'no advisories in the database; run `ghsa sync` first')
 
 
 def _has_patches_section(description: str) -> bool:
@@ -157,7 +162,7 @@ def _has_for_more_info_section(description: str) -> bool:
         r'(?im)^#{1,6}\s+For more information\s*$', description))
 
 
-def _update_analysis(ghsa_id: str, db_path: str, markdown_file: str,
+def _update_analysis(ghsa_id: str, db_url: Optional[str], markdown_file: str,
                      dry_run: bool) -> None:
     '''Store the contents of a Markdown file as the advisory analysis.'''
     try:
@@ -177,8 +182,8 @@ def _update_analysis(ghsa_id: str, db_path: str, markdown_file: str,
         click.echo(content)
         return
 
-    _require_db(db_path)
-    updated_at = db_mod.set_analysis(db_path, ghsa_id, content)
+    _require_db(db_url)
+    updated_at = db_mod.set_analysis(db_url, ghsa_id, content)
     click.echo(f'{ghsa_id}: analysis stored ({len(content)} chars) '
                f'at {updated_at}')
 
@@ -186,36 +191,20 @@ def _update_analysis(ghsa_id: str, db_path: str, markdown_file: str,
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
 @cli.command()
-@click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
-              help='local libSQL/Turso database file')
+@_db_option()
 @click.option('--repo', default=gh_mod.DEFAULT_REPO, show_default=True,
               help='GitHub owner/name repo slug')
-def sync(db: str, repo: str) -> None:
-    '''Sync all advisories from GitHub into the local database.'''
+def sync(db: Optional[str], repo: str) -> None:
+    '''Sync all advisories from GitHub into the database.'''
+    _require_db(db)
     session = gh_mod.github_session()
     advisories = gh_mod.fetch_advisories(session, repo, list(db_mod.ALL_STATES))
     count = db_mod.sync_to_db(db, repo, advisories)
-    click.echo(f'Synced {count} advisories from {repo} to {db}')
-
-
-@cli.command('sync-cloud')
-@click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
-              help='local libSQL/Turso database file')
-def sync_cloud(db: str) -> None:
-    '''Refresh the local database from the Turso cloud primary.
-
-    Pulls the latest advisories from Turso into the local replica. Writes are
-    already write-through to the cloud, so this only pulls. Requires
-    TURSO_DATABASE_URL (and, for private databases, TURSO_AUTH_TOKEN) in the
-    environment.
-    '''
-    db_mod.sync_cloud(db)
-    click.echo(f'Synced {db} with the Turso cloud')
+    click.echo(f'Synced {count} advisories from {repo}')
 
 
 @cli.command('list')
-@click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
-              help='local database file')
+@_db_option()
 @click.option('--repo', default=gh_mod.DEFAULT_REPO, show_default=True,
               help='filter by repo slug')
 @click.option('--state', 'states', multiple=True,
@@ -232,13 +221,13 @@ def sync_cloud(db: str) -> None:
               help='only show advisories missing standard sections')
 @click.option('--json', 'as_json', is_flag=True,
               help='emit raw JSON instead of a summary table')
-def list_cmd(db: str, repo: str, states: tuple[str, ...],
+def list_cmd(db: Optional[str], repo: str, states: tuple[str, ...],
              severity: Optional[str], past_embargo: bool,
              synced: bool, missing_fields: bool, as_json: bool) -> None:
-    '''List advisories from the local database.'''
+    '''List advisories from the database.'''
     _require_db(db)
     conn = db_mod.connect_db(db)
-    _require_table(conn, db)
+    _require_table(conn)
     resolved = list(states) if states else list(db_mod.DEFAULT_STATES)
     advisories = db_mod.query_advisories(conn, repo, resolved,
                                          severity, past_embargo, synced)
@@ -258,19 +247,18 @@ def list_cmd(db: str, repo: str, states: tuple[str, ...],
 
 @cli.command()
 @click.argument('ghsa_id')
-@click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
-              help='local database file')
+@_db_option()
 @click.option('--json', 'as_json', is_flag=True, help='emit raw JSON')
 @click.option('--analysis', 'only_analysis', is_flag=True,
               help='print only the stored analysis/triage notes')
 @click.option('--open', 'open_browser', is_flag=True,
               help='open the advisory in the default web browser')
-def show(ghsa_id: str, db: str, as_json: bool, only_analysis: bool,
+def show(ghsa_id: str, db: Optional[str], as_json: bool, only_analysis: bool,
          open_browser: bool) -> None:
     '''Show a single advisory by GHSA id.'''
     _require_db(db)
     conn = db_mod.connect_db(db)
-    _require_table(conn, db)
+    _require_table(conn)
     advisory = db_mod.get_advisory(conn, ghsa_id)
 
     if open_browser:
@@ -386,8 +374,7 @@ def create(json_file: str, repo: str) -> None:
 
 @cli.command()
 @click.argument('ghsa_id')
-@click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
-              help='local database file (used by --analysis)')
+@_db_option('MySQL database URL, used by --analysis')
 @click.option('--repo', default=gh_mod.DEFAULT_REPO, show_default=True,
               help='GitHub owner/name repo slug')
 @click.option('--missing-fields', is_flag=True,
@@ -395,12 +382,12 @@ def create(json_file: str, repo: str) -> None:
 @click.option('--analysis', metavar='FILE',
               type=click.Path(exists=True, dir_okay=False, allow_dash=True),
               help='Markdown file whose contents become the advisory '
-                   'analysis/triage notes in the local database')
+                   'analysis/triage notes in the database')
 @click.option('--dry-run', is_flag=True,
               help='print the updated description without changing GitHub')
-def update(ghsa_id: str, db: str, repo: str, missing_fields: bool,
+def update(ghsa_id: str, db: Optional[str], repo: str, missing_fields: bool,
            analysis: Optional[str], dry_run: bool) -> None:
-    '''Update an existing advisory on GitHub or its local analysis notes.'''
+    '''Update an existing advisory on GitHub or its analysis notes.'''
     if not missing_fields and not analysis:
         raise click.UsageError(
             'no update selected; use --missing-fields and/or --analysis')
@@ -451,8 +438,7 @@ def update(ghsa_id: str, db: str, repo: str, missing_fields: bool,
 
 
 @cli.command()
-@click.option('--db', default=_DEFAULT_DB, metavar='PATH', show_default=True,
-              help='local database file')
+@_db_option()
 @click.option('--repo', default=gh_mod.DEFAULT_REPO, show_default=True,
               help='filter by repo slug')
 @click.option('--output', '-o', default='advisories-dashboard.html',
@@ -460,16 +446,17 @@ def update(ghsa_id: str, db: str, repo: str, missing_fields: bool,
               help='output HTML file')
 @click.option('--open', 'open_browser', is_flag=True,
               help='open the dashboard in a browser after writing it')
-def dashboard(db: str, repo: str, output: str, open_browser: bool) -> None:
+def dashboard(db: Optional[str], repo: str, output: str, open_browser: bool) -> None:
     '''Render an HTML dashboard of the advisory database.'''
     _require_db(db)
     conn = db_mod.connect_db(db)
-    _require_table(conn, db)
+    _require_table(conn)
     advisories = db_mod.query_advisories(
         conn, repo, list(db_mod.ALL_STATES), severity=None, past_embargo=False)
     if not advisories:
         raise click.ClickException(
-            f'no advisories for {repo} in {db}; run `ghsa sync` first')
+            f'no advisories for {repo} in the database; '
+            'run `ghsa sync` first')
 
     generated_at = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z')
     html_doc = dash_mod.render_dashboard(advisories, repo, generated_at)
