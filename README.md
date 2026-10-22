@@ -74,7 +74,8 @@ uv run scripts/ghsa list --past-embargo
 # Only advisories changed in the latest database sync
 uv run scripts/ghsa list --synced
 
-# Only advisories missing the Patches or For more information section
+# Only advisories missing the Patches or For more information section,
+# or the embargo line
 uv run scripts/ghsa list --missing-fields
 ```
 

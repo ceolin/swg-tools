@@ -4,7 +4,6 @@
 
 import json
 import os
-import re
 import sys
 import webbrowser
 from datetime import date, datetime, timedelta
@@ -153,15 +152,6 @@ def _require_table(conn: Any) -> None:
             'no advisories in the database; run `ghsa sync` first')
 
 
-def _has_patches_section(description: str) -> bool:
-    return '<!-- zepsec:patch -->' in description
-
-
-def _has_for_more_info_section(description: str) -> bool:
-    return bool(re.search(
-        r'(?im)^#{1,6}\s+For more information\s*$', description))
-
-
 def _update_analysis(ghsa_id: str, db_url: Optional[str], markdown_file: str,
                      dry_run: bool) -> None:
     '''Store the contents of a Markdown file as the advisory analysis.'''
@@ -218,7 +208,7 @@ def sync(db: Optional[str], repo: str) -> None:
 @click.option('--synced', is_flag=True,
               help='only show advisories synced at or after the global marker')
 @click.option('--missing-fields', is_flag=True,
-              help='only show advisories missing standard sections')
+              help='only show advisories missing standard fields')
 @click.option('--json', 'as_json', is_flag=True,
               help='emit raw JSON instead of a summary table')
 def list_cmd(db: Optional[str], repo: str, states: tuple[str, ...],
@@ -234,9 +224,7 @@ def list_cmd(db: Optional[str], repo: str, states: tuple[str, ...],
     if missing_fields:
         advisories = [
             advisory for advisory in advisories
-            if not _has_patches_section(advisory.get('description') or '')
-            or not _has_for_more_info_section(
-                advisory.get('description') or '')
+            if db_mod.missing_fields(advisory.get('description'))
         ]
     if as_json:
         json.dump(advisories, sys.stdout, indent=2)
@@ -402,14 +390,13 @@ def update(ghsa_id: str, db: Optional[str], repo: str, missing_fields: bool,
     description = advisory.get('description') or ''
     missing: list[str] = []
 
-    if not _has_patches_section(description):
+    if not db_mod.has_patches_section(description):
         missing.append(_MISSING_PATCHES_SECTION)
 
-    if not _has_for_more_info_section(description):
+    if not db_mod.has_for_more_info_section(description):
         missing.append(gen_mod.FOR_MORE_INFO_SECTION)
 
-    if not re.search(r'(?im)^embargo:\s*\d{4}-\d{2}-\d{2}\s*$',
-                     description):
+    if not db_mod.has_embargo_line(description):
         created_at = advisory.get('created_at')
         if not created_at:
             raise click.ClickException(

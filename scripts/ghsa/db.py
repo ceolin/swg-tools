@@ -13,6 +13,8 @@ DEFAULT_STATES = ('draft', 'triage')
 ALL_STATES = ('draft', 'triage', 'published', 'closed')
 
 PATCHES_RE = re.compile(r'(?ims)^#{1,6}\s*Patches\s*$\s*(.*?)(?=^#{1,6}\s|\Z)')
+FOR_MORE_INFO_RE = re.compile(r'(?im)^#{1,6}\s+For more information\s*$')
+EMBARGO_LINE_RE = re.compile(r'(?im)^embargo:\s*\d{4}-\d{2}-\d{2}\s*$')
 
 _CREATE_TABLE = '''\
 CREATE TABLE IF NOT EXISTS advisories (
@@ -118,6 +120,31 @@ def parse_fixes(description: Optional[str]) -> list[str]:
         if line:
             fixes.append(line)
     return fixes
+
+
+def has_patches_section(description: str) -> bool:
+    return '<!-- zepsec:patch -->' in description
+
+
+def has_for_more_info_section(description: str) -> bool:
+    return bool(FOR_MORE_INFO_RE.search(description))
+
+
+def has_embargo_line(description: str) -> bool:
+    return bool(EMBARGO_LINE_RE.search(description))
+
+
+def missing_fields(description: Optional[str]) -> list[str]:
+    '''Names of the standard fields `ghsa update --missing-fields` would add.'''
+    description = description or ''
+    missing = []
+    if not has_patches_section(description):
+        missing.append('patches')
+    if not has_for_more_info_section(description):
+        missing.append('more info')
+    if not has_embargo_line(description):
+        missing.append('embargo')
+    return missing
 
 
 def _advisory_row(a: dict[str, Any], repo: str,
