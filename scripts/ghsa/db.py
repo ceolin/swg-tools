@@ -200,7 +200,7 @@ def connect_db(db_url: Optional[str]) -> Any:
         sys.exit('error: the "pymysql" package is required (uv add pymysql)')
     try:
         return pymysql.connect(**_connect_args(db_url))
-    except pymysql.Error as exc:
+    except (pymysql.Error, OSError) as exc:
         sys.exit(f'error: cannot connect to {redact_url(db_url)}: {exc}')
 
 
