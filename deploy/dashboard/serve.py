@@ -26,6 +26,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 OUTPUT_DIR = os.environ.get('OUTPUT_DIR', '/srv/dashboard')
 PAGE = os.path.join(OUTPUT_DIR, 'index.html')
+# Served at /favicon.ico for pages without an icon of their own (the 503
+# page) and for browsers that request it regardless.
+FAVICON = os.environ.get('FAVICON', '/app/assets/swg-tools-favicon.ico')
 PORT = int(os.environ.get('PORT', '8080'))
 UPDATE_TIMES = os.environ.get('UPDATE_TIMES', '06:00,18:00')
 SYNC = os.environ.get('SYNC', 'true').lower() in ('1', 'true', 'yes')
@@ -162,6 +165,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/healthz':
             self._send(HTTPStatus.OK, b'ok\n', 'text/plain', body)
             return
+        if path == '/favicon.ico':
+            try:
+                with open(FAVICON, 'rb') as fh:
+                    self._send(HTTPStatus.OK, fh.read(), 'image/x-icon', body,
+                               cache='max-age=86400')
+            except FileNotFoundError:
+                self._send(HTTPStatus.NOT_FOUND, b'not found\n',
+                           'text/plain', body)
+            return
         if path not in ('/', '/index.html'):
             self._send(HTTPStatus.NOT_FOUND, b'not found\n', 'text/plain',
                        body)
@@ -179,11 +191,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.OK, content, 'text/html; charset=utf-8', body)
 
     def _send(self, status: HTTPStatus, content: bytes, ctype: str,
-              body: bool) -> None:
+              body: bool, cache: str = 'no-cache') -> None:
         self.send_response(status)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(content)))
-        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Cache-Control', cache)
         self.end_headers()
         if body:
             self.wfile.write(content)
