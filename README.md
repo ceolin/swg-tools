@@ -203,3 +203,26 @@ analysis notes exist only in this database.
 ```sh
 15 3 * * * /path/to/swg-tools/deploy/mysql/backup.sh
 ```
+
+### Serving the dashboard
+
+`deploy/dashboard/` builds a container that serves the dashboard over
+HTTP and regenerates it at 06:00 and 18:00. Each update runs `ghsa sync`
+and then `ghsa dashboard`; if the sync fails the page is still rebuilt
+from what the database holds.
+
+```sh
+cd deploy/dashboard
+cp dashboard.env.example dashboard.env   # fill in the database URL and token
+chmod 600 dashboard.env
+docker compose up -d --build
+```
+
+The page is at `http://<host>:8080/`. `UPDATE_TIMES` and `TZ` in
+`dashboard.env` change the schedule; `DASHBOARD_BIND` and `DASHBOARD_PORT`
+change where it listens. The compose file mounts `../mysql/certs/ca.pem`,
+so run it on the database host or copy the CA there.
+
+The dashboard lists embargoed advisories and has no authentication.
+Expose it only on a private network, for example with
+`DASHBOARD_BIND=<tailscale-ip>`.

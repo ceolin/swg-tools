@@ -1,0 +1,13 @@
+# Advisory dashboard, regenerated at UPDATE_TIMES. Copy dashboard.env.example
+# to dashboard.env and fill it in first.
+services:
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: deploy/dashboard/Dockerfile
+    restart: unless-stopped
+    env_file: dashboard.env
+    ports:
+      - "${DASHBOARD_BIND:-0.0.0.0}:${DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - ../mysql/certs/ca.pem:/etc/ghsa/ca.pem:ro

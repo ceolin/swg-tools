@@ -1,0 +1,6 @@
+*
+!pyproject.toml
+!scripts/ghsa/
+!assets/
+!deploy/dashboard/serve.py
+**/__pycache__

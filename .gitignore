@@ -13,3 +13,4 @@ advisories-dashboard.html
 /deploy/mysql/secrets/
 /deploy/mysql/certs/
 /deploy/mysql/backups/
+/deploy/dashboard/dashboard.env
