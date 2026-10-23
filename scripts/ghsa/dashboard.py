@@ -438,7 +438,8 @@ body {{
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px; line-height: 1.45;
 }}
-header {{ padding: 28px 32px 8px; }}
+header {{ padding: 28px 32px 8px; max-width: 1560px; display: flex;
+  gap: 16px; justify-content: space-between; align-items: flex-start; }}
 header h1 {{ margin: 0; font-size: 22px; }}
 header .sub {{ color: var(--ink-2); margin-top: 4px; }}
 main {{ padding: 16px 32px 48px; max-width: 1560px; }}
@@ -535,12 +536,23 @@ a:hover {{ text-decoration: underline; }}
 .fix:hover:not(:disabled) {{ background: color-mix(in srgb, var(--series-1) 12%, transparent); }}
 .fix:disabled {{ opacity: .6; cursor: default; }}
 .fix-note {{ font-size: 12px; color: var(--muted); }}
+.refresh {{
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--ink); border-radius: 8px; padding: 7px 14px;
+  font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap;
+}}
+.refresh:hover:not(:disabled) {{ border-color: var(--series-1); }}
+.refresh:disabled {{ color: var(--muted); cursor: progress; }}
 </style>
 </head>
 <body>
 <header>
-  <h1>Zephyr security advisory dashboard</h1>
-  <div class="sub">{repo} · generated {generated}</div>
+  <div>
+    <h1>Zephyr security advisory dashboard</h1>
+    <div class="sub">{repo} · generated {generated}</div>
+  </div>
+  <button type="button" class="refresh" id="refresh" hidden
+          title="Sync advisories from GitHub and rebuild this page">Refresh</button>
 </header>
 <main>
   <div class="tiles">{tiles}</div>
@@ -640,6 +652,27 @@ function missingCell(r) {{
 }}
 // Served by deploy/dashboard/serve.py the button runs the update there;
 // opened from disk there is no server, so it copies the command instead.
+// Only the served dashboard can sync; opened from disk the button stays hidden.
+const refreshBtn = document.getElementById("refresh");
+if (location.protocol !== "file:") refreshBtn.hidden = false;
+refreshBtn.addEventListener("click", async () => {{
+  refreshBtn.disabled = true;
+  refreshBtn.textContent = "Refreshing…";
+  try {{
+    const resp = await fetch("api/refresh", {{
+      method: "POST",
+      headers: {{"X-Requested-With": "ghsa-dashboard"}},
+    }});
+    const res = await resp.json().catch(() => ({{}}));
+    if (!resp.ok || !res.ok) throw new Error(res.output || resp.statusText);
+    if (res.output !== "dashboard updated") alert(res.output);
+    location.reload();
+  }} catch (e) {{
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = "Refresh";
+    alert("Refreshing the dashboard failed:\\n\\n" + e.message);
+  }}
+}});
 async function fixMissing(btn) {{
   const ghsa = btn.dataset.ghsa;
   const cmd = updateCommand(ghsa);

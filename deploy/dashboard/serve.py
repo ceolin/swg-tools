@@ -11,6 +11,7 @@ every RETRY_MINUTES until it succeeds.
 
 POST /api/update-missing-fields runs `ghsa update GHSA --missing-fields`
 for the advisory named in the JSON body, then refreshes the dashboard.
+POST /api/refresh syncs and re-renders right away and answers once done.
 '''
 
 import json
@@ -39,7 +40,11 @@ GHSA_RE = re.compile(r'GHSA(-[23456789cfghjmpqrvwx]{4}){3}')
 MAX_BODY = 4096
 
 last_error: str = ''
+sync_failed = False
 refresh = threading.Event()
+# Held while an update runs, so the scheduler and /api/refresh never run
+# two at once.
+update_lock = threading.Lock()
 
 
 def log(msg: str) -> None:
@@ -80,10 +85,16 @@ def ghsa(*args: str, capture: bool = False,
 
 
 def update() -> bool:
-    global last_error
+    with update_lock:
+        return _update()
+
+
+def _update() -> bool:
+    global last_error, sync_failed
+    sync_failed = False
     if SYNC:
         log('syncing advisories from GitHub')
-        ghsa('sync')
+        sync_failed = ghsa('sync').returncode != 0
     log('rendering dashboard')
     tmp = PAGE + '.tmp'
     if ghsa('dashboard', '--output', tmp).returncode:
@@ -93,6 +104,17 @@ def update() -> bool:
     last_error = ''
     log('dashboard updated')
     return True
+
+
+def refresh_now() -> bool:
+    '''Update now; if an update is already running, wait for it instead.'''
+    if update_lock.acquire(blocking=False):
+        try:
+            return _update()
+        finally:
+            update_lock.release()
+    with update_lock:
+        return not last_error
 
 
 def scheduler(times: list[tuple[int, int]]) -> None:
@@ -116,7 +138,8 @@ class Handler(BaseHTTPRequestHandler):
         self._serve(body=False)
 
     def do_POST(self) -> None:
-        if self.path.split('?', 1)[0] != '/api/update-missing-fields':
+        path = self.path.split('?', 1)[0]
+        if path not in ('/api/update-missing-fields', '/api/refresh'):
             self._json(HTTPStatus.NOT_FOUND, False, 'not found')
             return
         # The custom header makes browsers send a CORS preflight, which this
@@ -128,6 +151,24 @@ class Handler(BaseHTTPRequestHandler):
         if origin and origin != f'http://{self.headers.get("Host")}':
             self._json(HTTPStatus.FORBIDDEN, False, 'cross-origin request')
             return
+        if path == '/api/refresh':
+            self._refresh()
+        else:
+            self._update_missing_fields()
+
+    def _refresh(self) -> None:
+        log(f'{self.address_string()} requested a refresh')
+        if not refresh_now():
+            self._json(HTTPStatus.BAD_GATEWAY, False,
+                       f'dashboard {last_error}; see the container logs')
+        elif sync_failed:
+            self._json(HTTPStatus.OK, True,
+                       'GitHub sync failed, so the dashboard was rebuilt from '
+                       'the database as it is; see the container logs')
+        else:
+            self._json(HTTPStatus.OK, True, 'dashboard updated')
+
+    def _update_missing_fields(self) -> None:
         try:
             length = int(self.headers.get('Content-Length') or 0)
             if length > MAX_BODY:

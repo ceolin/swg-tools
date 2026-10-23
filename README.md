@@ -229,6 +229,9 @@ The page is at `http://<host>:8080/`. `UPDATE_TIMES` and `TZ` in
 change where it listens. The compose file mounts `../mysql/certs/ca.pem`,
 so run it on the database host or copy the CA there.
 
+The `Refresh` button at the top right syncs from GitHub and rebuilds the
+page right away, without waiting for the next scheduled update.
+
 The `Update` button in the `Missing` column runs
 `ghsa update <GHSA> --missing-fields` in the container and refreshes the
 page, so `SWG_GITHUB_TOKEN` needs write access to security advisories.
